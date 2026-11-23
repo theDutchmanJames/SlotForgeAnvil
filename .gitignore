@@ -1,0 +1,16 @@
+node_modules/
+dist/
+# Machine-specific development settings (see vite.config.js)
+anvil.local.json
+# Car models used for testing are never part of Anvil
+*.stl
+*.STL
+*.anvil
+# The design previews show renders of a test model, so they stay on this computer
+docs/ui-reference/
+# Local agent workspace
+.claude/
+# OS files
+Thumbs.db
+desktop.ini
+.DS_Store

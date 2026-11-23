@@ -1,0 +1,114 @@
+{
+  "name": "slotforge-anvil",
+  "version": "1.0.0",
+  "productName": "SlotForge Anvil",
+  "description": "SlotForge Anvil: turn any car model into a light, printable slotcar body",
+  "author": "theDutchmanJames",
+  "license": "SEE LICENSE IN LICENSE",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "test": "node --test tests/*.test.js",
+    "start": "npm run build && electron .",
+    "test:desktop": "node desktop/smoke.cjs",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:zip": "npm run build && electron-builder --win zip --publish never",
+    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:linux": "npm run build && electron-builder --linux --publish never"
+  },
+  "dependencies": {
+    "sql.js": "^1.17.0",
+    "three": "^0.187.0",
+    "three-mesh-bvh": "^0.9.18"
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "26.18.1",
+    "vite": "^8.3.8",
+    "vite-plugin-singlefile": "^2.3.4"
+  },
+  "build": {
+    "appId": "nl.slotforge.anvil",
+    "productName": "SlotForge Anvil",
+    "executableName": "SlotForgeAnvil",
+    "directories": {
+      "output": "dist/desktop/v${version}",
+      "buildResources": "desktop/build"
+    },
+    "files": [
+      "package.json",
+      "desktop/*.cjs",
+      "!desktop/smoke.cjs",
+      "desktop/build/icon.*",
+      "dist/index.html",
+      "LICENSE",
+      "!node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "LICENSE",
+        "to": "SlotForge-Anvil-LICENSE.txt"
+      }
+    ],
+    "win": {
+      "target": [
+        "zip",
+        "nsis",
+        "portable"
+      ],
+      "icon": "desktop/build/icon.ico",
+      "signExecutable": false,
+      "artifactName": "SlotForgeAnvil-${version}-Windows-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "SlotForgeAnvil-${version}-Portable-${arch}.${ext}",
+      "unpackDirName": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SlotForge Anvil",
+      "uninstallDisplayName": "SlotForge Anvil",
+      "installerIcon": "desktop/build/icon.ico",
+      "uninstallerIcon": "desktop/build/icon.ico",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "packElevateHelper": false,
+      "artifactName": "SlotForgeAnvil-${version}-Setup-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.graphics-design",
+      "icon": "desktop/build/icon.png",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "notarize": false,
+      "artifactName": "SlotForgeAnvil-${version}-mac-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "SlotForge Anvil ${version}"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Graphics",
+      "icon": "desktop/build/icon.png",
+      "maintainer": "theDutchmanJames",
+      "synopsis": "Turn any car model into a printable slotcar body",
+      "artifactName": "SlotForgeAnvil-${version}-linux-${arch}.${ext}"
+    }
+  }
+}
