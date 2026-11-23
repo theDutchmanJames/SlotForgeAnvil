@@ -17,7 +17,7 @@ button { font: inherit; color: inherit; }
 .mono { font-family: var(--font-mono); }
 .vline { width: 1px; align-self: stretch; margin: 6px 4px; background: var(--line); }
 
-#app { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; height: 100vh; }
+#app { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); height: 100vh; }
 
 /* ---------- buttons */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 0 12px; border: 1px solid transparent; border-radius: 7px; background: var(--btn); cursor: pointer; white-space: nowrap; font-size: 13px; }
@@ -38,12 +38,31 @@ button { font: inherit; color: inherit; }
 
 /* ---------- top bar */
 .pb { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
-.brand { font: italic 700 15px/1 var(--font-title); letter-spacing: .06em; color: var(--accent-text); text-transform: uppercase; }
+/* SlotForge family brand: app icon beside the wordmark, with the slogan
+   underneath it set to the wordmark's width (as in Foundry, Circuit and Telemetry). */
+.brand { display: flex; align-items: center; gap: 10px; flex: none; }
+.brand .brand-icon { width: 42px; height: 42px; flex: none; display: block; }
+.brand-copy { display: grid; grid-template-columns: 112px; align-content: center; gap: 4px; height: 42px; }
+.brand-wordmark { display: block; position: relative; width: 100%; aspect-ratio: 407.56 / 87.12; }
+.brand-wordmark img { position: absolute; inset: 0; width: 100%; height: auto; }
+.brand-copy small { font-size: 8px; line-height: 10px; font-weight: 500; white-space: nowrap; color: var(--muted); text-align: justify; text-align-last: justify; letter-spacing: 1px; }
+@media (max-width: 1180px) { .brand-copy small { display: none; } }
+/* The SlotForge App Collection mark, 120 px wide as in the other apps. */
+.sf-footer-brand { display: flex; align-items: center; flex: 0 0 120px; width: 120px; padding: 0 11px; box-sizing: content-box; }
+.sf-footer-brand img { display: block; width: 120px; height: auto; }
 .who { display: flex; flex-direction: column; min-width: 0; }
 .who input.name { font: italic 700 24px/1.05 var(--font-title); text-transform: uppercase; letter-spacing: .01em; background: none; border: 0; border-bottom: 1px dashed var(--line); color: var(--ink); padding: 0 0 1px; width: 22ch; min-width: 8ch; outline: none; }
 .who input.name:focus { border-bottom-color: var(--accent); }
 .who .note { font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pb .end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+/* The Light / Dark switch (theme.css) uses plain buttons, as in Foundry. */
+.tone-switch button { border: 0; background: transparent; font-family: inherit; white-space: nowrap; cursor: pointer; }
+.tone-switch button:hover:not([aria-pressed='true']) { color: var(--ink); }
+/* Narrower windows: the top bar gives way step by step. */
+@media (max-width: 1440px) { .pb .end .state { font-size: 0; gap: 0; margin-right: 0; } .pb .who input.name { width: 15ch; } }
+@media (max-width: 1240px) { .pb .tone-switch button span { display: none; } }
+@media (max-width: 1120px) { .pb .brand-copy { display: none; } }
+@media (max-width: 1220px) { nav.tools { flex-wrap: wrap; row-gap: 4px; } }
 .state { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ok); margin-right: 6px; white-space: nowrap; }
 .state.busy { color: var(--muted); }
 
@@ -132,6 +151,9 @@ input[type=range] { accent-color: var(--accent-fill); flex: 1; min-width: 0; }
 .sb { display: flex; align-items: center; gap: 6px; padding: 7px 11px; border-right: 1px solid var(--line); white-space: nowrap; }
 .sb b { color: var(--ink2); font-weight: 600; }
 .sb.end { margin-left: auto; border-right: 0; border-left: 1px solid var(--line); }
+/* When the bar is full, the readings shrink; the version and the SlotForge mark stay whole. */
+.status > .sb { min-width: 0; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; }
+.status > .sb.end, .status > .sf-footer-brand { flex-shrink: 0; }
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
 .dot.ok { background: var(--ok); } .dot.w { background: var(--warn); } .dot.no { background: var(--faint); } .dot.bad { background: var(--accent); }
 

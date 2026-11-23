@@ -1,12 +1,16 @@
 'use strict';
 // SlotForge Anvil desktop shell. Anvil is a single offline page
 // (dist/index.html, built by Vite); this shows it in its own window.
-// Based on SlotForge Foundry's shell, without the update check for now.
-const { app, BrowserWindow, Menu, dialog, shell, session } = require('electron');
+// Based on SlotForge Foundry's shell, with the SlotForge update check
+// (desktop/update-check.cjs).
+const { app, BrowserWindow, Menu, dialog, shell, session, ipcMain, net } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { UpdateCheck } = require('./update-check.cjs');
+
 const ROOT = path.resolve(__dirname, '..');
+const HOMEPAGE = require('../package.json').homepage;
 const PAGE = path.join(ROOT, 'dist', 'index.html');
 
 app.setAppUserModelId('nl.slotforge.anvil');
@@ -34,9 +38,10 @@ function smokeTest(win) {
       () =>
         win.webContents
           .executeJavaScript(
-            `({ href: location.href, brand: document.querySelector('.brand')?.textContent, menus: document.querySelectorAll('#tools [data-act=menu]').length,
+            `({ href: location.href, brand: document.querySelector('.brand')?.getAttribute('aria-label'),
+                wordmark: [...document.querySelectorAll('.brand img, .sf-footer-brand img')].filter(i => i.complete && i.naturalWidth > 0).length, menus: document.querySelectorAll('#tools [data-act=menu]').length,
                 empty: !!document.querySelector('#empty'), canvas: !!document.querySelector('#view canvas'),
-                desktop: window.slotforgeDesktop?.desktop === true })`,
+                desktop: window.slotforgeDesktop?.desktop === true, updates: !!window.UpdateUI && typeof window.slotforgeDesktop?.updateCheck === 'function' })`,
           )
           .then(page => write({ page }), fail),
       3000,
@@ -63,10 +68,76 @@ if (!app.requestSingleInstanceLock()) {
     } catch {}
   };
 
+  // "A new version is available": installed and portable apps ask GitHub once,
+  // a few seconds after start; a newer version opens a window with What's new,
+  // Skip and Download. Development copies, automated runs and
+  // SLOTFORGE_NO_UPDATE_CHECK only check when asked in Settings.
+  const automated = !!SMOKE;
+  const updateCheck = new UpdateCheck({
+    profile: app.getPath('userData'),
+    current: app.getVersion(),
+    homepage: HOMEPAGE,
+    appName: 'Anvil',
+    artifactPrefix: 'SlotForgeAnvil',
+    userAgent: 'SlotForge-Anvil',
+    fetch: (url, init) => net.fetch(url, init),
+    automatic: app.isPackaged && !automated && !process.env.SLOTFORGE_NO_UPDATE_CHECK,
+    // Which file replaces this copy: the portable app and an AppImage say so through these.
+    edition: {
+      platform: process.platform,
+      arch: process.arch,
+      portable: !!process.env.PORTABLE_EXECUTABLE_FILE,
+      appImage: !!process.env.APPIMAGE,
+    },
+    downloads: app.getPath('downloads'),
+    onChange: () => {
+      if (win && !win.isDestroyed()) win.webContents.send('update:changed');
+    },
+  });
+  let updateTimer = setTimeout(() => void updateCheck.startupCheck(), 5 * 1000);
+  updateTimer.unref();
+  // Only Anvil's own page may ask: the page is a file, so the sender must be
+  // the main frame of Anvil's window showing that file.
+  const ownPage = event =>
+    !!win &&
+    event.sender === win.webContents &&
+    event.senderFrame === win.webContents.mainFrame &&
+    sameFile(event.senderFrame.url);
+  ipcMain.handle('update:action', async (event, action, payload) => {
+    if (!ownPage(event)) return { error: 'Unknown page.' };
+    try {
+      if (action === 'status') return { ok: true, value: updateCheck.status() };
+      if (action === 'check') return { ok: true, value: await updateCheck.check() };
+      if (action === 'enable') return { ok: true, value: updateCheck.setEnabled(payload?.enabled) };
+      if (action === 'skip') return { ok: true, value: updateCheck.skip(payload?.version) };
+      if (action === 'download') {
+        // Not awaited: progress and the result reach the window through update:changed.
+        updateCheck.startDownload().catch(() => {});
+        return { ok: true, value: updateCheck.status() };
+      }
+      if (action === 'cancel') return { ok: true, value: updateCheck.cancelDownload() };
+      if (action === 'show') {
+        shell.showItemInFolder(updateCheck.downloadedFile());
+        return { ok: true, value: { shown: true } };
+      }
+      if (action === 'open') {
+        await shell.openExternal(updateCheck.releaseUrl());
+        return { ok: true, value: { opened: true } };
+      }
+      throw Error('Unknown update action.');
+    } catch (e) {
+      return { error: e.message, code: e.code };
+    }
+  });
+
   app.on('second-instance', () => {
     if (!win) return;
     if (win.isMinimized()) win.restore();
     win.focus();
+  });
+  app.on('before-quit', () => {
+    clearTimeout(updateTimer);
+    updateCheck.stop(); // abandons a check or download in progress
   });
   app.on('window-all-closed', () => app.quit());
 
@@ -130,6 +201,15 @@ if (!app.requestSingleInstanceLock()) {
           ],
         },
         { role: 'windowMenu' },
+        {
+          label: 'Help',
+          submenu: [
+            { label: 'SlotForge Anvil on GitHub', click: () => shell.openExternal(HOMEPAGE) },
+            { label: 'Report a problem', click: () => shell.openExternal(HOMEPAGE + '/issues') },
+            { type: 'separator' },
+            { label: 'Show data folder', click: () => shell.openPath(app.getPath('userData')) },
+          ],
+        },
       ]),
     );
   }

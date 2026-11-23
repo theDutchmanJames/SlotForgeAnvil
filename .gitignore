@@ -14,3 +14,5 @@ docs/ui-reference/
 Thumbs.db
 desktop.ini
 .DS_Store
+# Icon design sketches (kept on this computer)
+docs/icon-concepts/

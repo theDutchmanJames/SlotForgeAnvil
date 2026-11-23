@@ -74,6 +74,14 @@ export class Viewport {
     this.needsRender = true;
   }
 
+  // The theme changed: the 3D view takes the canvas colour its box shows.
+  retheme() {
+    const c = getComputedStyle(this.host).backgroundColor;
+    if (c && c !== 'rgba(0, 0, 0, 0)') this.scene.background = new THREE.Color(c);
+    if (this.box) this.drawGround();
+    this.render();
+  }
+
   makeControls() {
     const target = this.controls?.target.clone();
     this.controls?.dispose();
@@ -301,7 +309,9 @@ export class Viewport {
     if (!this.box) return;
     const size = this.box.getSize(new THREE.Vector3());
     const span = Math.ceil((Math.max(size.x, size.y) * 1.6) / 10) * 10;
-    const grid = new THREE.GridHelper(span, span / 10, 0x343b47, 0x262c34);
+    // Grid lines a little towards the text colour from the canvas, so they suit either theme.
+    const base = this.scene.background.clone(), ink = new THREE.Color(css('--ink', '#e8e6e1'));
+    const grid = new THREE.GridHelper(span, span / 10, base.clone().lerp(ink, 0.16), base.clone().lerp(ink, 0.07));
     grid.rotation.x = Math.PI / 2;
     grid.position.set(0, 0, -0.01);
     this.groundGroup.add(grid);

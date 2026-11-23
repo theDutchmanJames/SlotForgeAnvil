@@ -3,7 +3,16 @@
 // the geometry worker, so every step can be changed or switched off later.
 import './theme.css';
 import './style.css';
+import './update-basics.css';
+import './update-window.css';
+import './update-ui.js';
+import { applyThemeState, loadTheme, read as readTheme, saveTheme, STORAGE_KEY as THEME_STORAGE_KEY } from './app-theme.js';
 import EngineWorker from './geometry/engine.worker.js?worker&inline';
+import brandIcon from './assets/slotforge-anvil.svg?inline';
+import wordmarkDark from './assets/anvil-dark.svg?inline';
+import wordmarkLight from './assets/anvil-light.svg?inline';
+import collectionDark from './assets/slotforge-dark.svg?inline';
+import collectionLight from './assets/slotforge-light.svg?inline';
 import { Viewport } from './viewport.js';
 import { encodeSTL } from './geometry/stl-mesh.js';
 import { AXES, bounds, encodeRuns, runCount } from './geometry/engine.js';
@@ -89,9 +98,16 @@ const ui = {
 
 // ------------------------------------------------------------ layout
 
+// SlotForge family brand: the app icon beside the wordmark, the slogan under it,
+// and the SlotForge App Collection mark at the end of the status bar.
+export const BRAND_SLOGAN = 'HAMMERED INTO SHAPE';
+// The desktop app has Settings → Updates (the SlotForge update check, as in Foundry).
+const desktopUpdates = Boolean(globalThis.slotforgeDesktop?.updateCheck);
+const footBrand = `<span class="sf-footer-brand"><img class="wm-dark" src="${collectionDark}" width="621" height="90" alt="SlotForge App Collection"><img class="wm-light" src="${collectionLight}" width="621" height="90" alt="SlotForge App Collection"></span>`;
+
 $('#app').innerHTML = `
 <header class="pb">
-  <span class="brand">Anvil</span><span class="vline"></span>
+  <div class="brand" role="img" aria-label="SlotForge Anvil"><img class="brand-icon" src="${brandIcon}" width="42" height="42" alt=""><span class="brand-copy"><span class="brand-wordmark"><img class="wm-dark" src="${wordmarkDark}" width="408" height="87" alt=""><img class="wm-light" src="${wordmarkLight}" width="408" height="87" alt=""></span><small>${BRAND_SLOGAN}</small></span></div><span class="vline"></span>
   <div class="who"><input class="name" id="name" spellcheck="false" placeholder="Body name" disabled><span class="note" id="note">No model open</span></div>
   <div class="end">
     <span class="state" id="state"></span>
@@ -102,6 +118,9 @@ $('#app').innerHTML = `
     <button class="btn icon ghost" data-act="undo" title="Undo (Ctrl+Z)">${icon('undo')}</button>
     <button class="btn icon ghost" data-act="redo" title="Redo (Ctrl+Y)">${icon('redo')}</button>
     <button class="btn ghost sm" data-act="final" title="Everything checked before you print">${icon('final')}Final check</button>
+    <span class="vline"></span>
+    <div class="tone-switch" role="group" aria-label="Theme"><button type="button" data-act="theme-light" aria-pressed="false" title="Light theme">☼<span>Light</span></button><button type="button" data-act="theme-dark" aria-pressed="true" title="Dark theme">☾<span>Dark</span></button></div>
+    <button class="btn icon ghost" data-act="settings" title="Settings"${desktopUpdates ? '' : ' hidden'}>${icon('settings')}</button>
     <button class="btn primary" data-act="export" title="Export the body as an STL">${icon('export')}Export STL</button>
   </div>
 </header>
@@ -2252,7 +2271,7 @@ function renderSteps() {
 function renderStatus() {
   const el = $('#status');
   if (!result) {
-    el.innerHTML = `<span class="sb"><span class="dot no"></span><b>Model</b>none open</span><span class="sb end">SlotForge Anvil ${__ANVIL_VERSION__}</span>`;
+    el.innerHTML = `<span class="sb"><span class="dot no"></span><b>Model</b>none open</span><span class="sb end">Anvil ${__ANVIL_VERSION__}</span>${footBrand}`;
     return;
   }
   const s = result.stats,
@@ -2274,7 +2293,7 @@ function renderStatus() {
     <span class="sb"><span class="dot ${broken ? 'bad' : 'ok'}"></span><b>Steps</b>${project.steps.length + 1}${broken ? ` · ${broken} could not be done` : ''}</span>
     ${chassisStatus()}
     ${wallStatus()}
-    <span class="sb end">SlotForge Anvil ${__ANVIL_VERSION__}</span>`;
+    <span class="sb end">Anvil ${__ANVIL_VERSION__}</span>${footBrand}`;
 }
 
 // ------------------------------------------------------------ guides on the car
@@ -2911,6 +2930,10 @@ const actions = {
     ui.menu = null;
     actions.tool('final');
   },
+  settings() {
+    const d = settingsDialog();
+    if (!d.open) d.showModal();
+  },
   'final-go'(v) {
     if (TOOL_MENU[v]) ui.menu = TOOL_MENU[v];
     actions.tool(v);
@@ -3527,6 +3550,58 @@ function toast(text, kind = '') {
   $('#toasts').append(el);
   setTimeout(() => el.remove(), kind === 'bad' ? 7000 : 4500);
 }
+
+// ------------------------------------------------------------ theme
+
+// The SlotForge app theme, shared with the other apps on this computer
+// (src/app-theme.js, as in Foundry). index.html applies it before the first paint.
+let themeState = loadTheme();
+function syncTheme() {
+  applyThemeState(themeState);
+  for (const b of document.querySelectorAll('[data-act^="theme-"]'))
+    b.setAttribute('aria-pressed', String(b.dataset.act === 'theme-' + themeState.theme));
+  viewport.retheme();
+}
+function chooseTheme(theme) {
+  themeState = { ...themeState, theme };
+  saveTheme(themeState);
+  syncTheme();
+}
+syncTheme();
+// Another SlotForge app (or window) changed the shared theme.
+addEventListener('storage', (e) => {
+  if (e.key !== THEME_STORAGE_KEY || !e.newValue) return;
+  themeState = readTheme(e.newValue);
+  syncTheme();
+});
+actions['theme-light'] = () => chooseTheme('light');
+actions['theme-dark'] = () => chooseTheme('dark');
+
+// ------------------------------------------------------------ settings
+
+// Settings (desktop app): Updates, the shared SlotForge update card (update-ui.js).
+// The update window itself opens by itself when a newer version is published.
+let settingsBox = null;
+function settingsDialog() {
+  if (settingsBox) return settingsBox;
+  settingsBox = document.createElement('dialog');
+  settingsBox.className = 'update-dialog settings-dialog';
+  settingsBox.setAttribute('aria-labelledby', 'settings-title');
+  settingsBox.innerHTML = `<div class="dialog-heading"><div><p class="help-crumb">SlotForge Anvil</p><h2 id="settings-title">Settings</h2></div>
+    <button type="button" class="btn quiet" aria-label="Close">✕</button></div><div class="settings-body"></div>`;
+  settingsBox.querySelector('.btn.quiet').onclick = () => settingsBox.close();
+  settingsBox.querySelector('.settings-body').append(updatesHolder);
+  document.body.append(settingsBox);
+  return settingsBox;
+}
+const updatesHolder = document.createElement('div');
+updatesHolder.className = 'st-updates';
+globalThis.UpdateUI?.start({
+  settings: updatesHolder,
+  say: (message, bad) => toast(message, bad ? 'bad' : ''),
+  appName: 'Anvil',
+  keeps: 'your projects, library and settings stay where they are',
+});
 
 // ------------------------------------------------------------ start
 

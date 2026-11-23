@@ -45,10 +45,12 @@ function launch() {
       const r = await launch();
       assert.equal(r.failed, undefined, r.message);
       assert.equal(path.resolve(r.profile), path.join(data, 'app-profile'), round + ': data stays in the given folder');
-      assert.equal(r.page?.brand, 'Anvil', round + ': the top bar did not appear: ' + JSON.stringify(r.page));
+      assert.equal(r.page?.brand, 'SlotForge Anvil', round + ': the top bar did not appear: ' + JSON.stringify(r.page));
+      assert.equal(r.page.wordmark, 5, round + ': the app icon, wordmarks and collection marks are drawn');
       assert.equal(r.page.menus, 8, round + ': the eight tool menus are there');
       assert.ok(r.page.empty, round + ': the "drop a car model" card is there');
       assert.ok(r.page.desktop, round + ': the desktop bridge is there');
+      assert.ok(r.page.updates, round + ': the update check is there');
       assert.match(r.page.href, /^file:/, round);
       // SLOTFORGE_NO_WEBGL_OK: a CI machine that cannot draw 3D at all may report
       // only that; every other console error still fails.

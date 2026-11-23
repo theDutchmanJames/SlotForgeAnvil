@@ -1,6 +1,6 @@
 # SlotForge Anvil
 
-Turn any car model into a light, printable slotcar body. Part of the SlotForge app family.
+**From any 3D car model to a body you can race.** Anvil scales a model to 1/32 or 1/24, repairs it, hollows it to an even wall, fits it to your chassis, cuts the windows and gives you a print-ready STL for resin or FDM. Free, for Windows, macOS and Linux. Part of the SlotForge app family.
 
 Free to use and share; source open, no reselling. See [LICENSE](LICENSE).
 
@@ -89,6 +89,8 @@ Tests: `npm test`.
 - macOS and Linux are built by GitHub (`.github/workflows/native-release.yml`) when a release is published; they are tested on each system and attached to the same release. `npm run dist:mac` and `npm run dist:linux` work on those systems too.
 - The macOS app is not notarised: the first time, right-click it and choose Open.
 - `npm run test:desktop` starts the built desktop app twice on a throwaway data folder and checks that it opens.
+
+Updates work as in the other SlotForge apps (`desktop/update-check.cjs` and `src/update-ui.js`, the same files as Foundry's): an installed or portable copy asks GitHub for the newest release a few seconds after it starts. A newer version opens a window with the release's **What's new** section, Skip and Download. Download saves the file for this copy in Downloads; it never installs anything. **Settings** (the gear in the top bar) has Updates, with Check now and the switch for the check at start. Release notes need a `## What's new` section with `- **Title:** text` lines for the window to show them.
 
 Release: set the version in `package.json`, `npm run dist:win`, tag `v<version>`, publish a GitHub release with the Windows files attached; the macOS and Linux files follow.
 

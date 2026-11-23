@@ -3,7 +3,34 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  // The SlotForge theme before the first paint; src/app-theme.js owns it (as in Foundry).
+  (function () {
+    var root = document.documentElement,
+      theme = 'dark',
+      custom = null,
+      legacy = null;
+    try {
+      legacy = localStorage.getItem('anvil.theme');
+      var saved = JSON.parse(localStorage.getItem('slotforge.appearance.v1') || 'null');
+      theme = (saved && saved.theme) || (legacy === 'light' ? 'light' : 'dark');
+      custom = saved && saved.customColors;
+    } catch (e) {}
+    try {
+      theme = new URL(location.href).searchParams.get('sfTheme') || theme;
+    } catch (e) {}
+    root.dataset.theme = theme;
+    root.dataset.tone =
+      theme === 'light' || theme === 'ocean' || (theme === 'custom' && legacy === 'light')
+        ? 'light'
+        : 'dark';
+    if (theme === 'custom' && custom)
+      for (var k in custom)
+        if (/^#[0-9a-f]{6}$/i.test(custom[k])) root.style.setProperty('--' + k, custom[k]);
+  })();
+</script>
 <title>SlotForge Anvil</title>
+<link rel="icon" href="./src/assets/slotforge-anvil.svg">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -45,6 +72,7 @@
   <symbol id="i-smooth" viewBox="0 0 24 24"><path d="M3 15c3-4 6-4 9 0s6 4 9 0"/><path d="M3 9c3-2 6-2 9 0s6 2 9 0"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
   <symbol id="i-final" viewBox="0 0 24 24"><path d="M4 12l5 5L20 6"/><path d="M4 20h16"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></symbol>
   <symbol id="i-window" viewBox="0 0 24 24"><path d="M3 16 7 7h11l3 9z"/><path d="M12 7v9"/></symbol>
   <symbol id="i-buck" viewBox="0 0 24 24"><path d="M3 19h18"/><path d="M5 19v-3h14v3"/><path d="M6 16c1-5 3-8 6-8s5 3 6 8"/></symbol>
   <symbol id="i-post" viewBox="0 0 24 24"><path d="M4 4h16"/><path d="M8 4c1.5 0 1.5 2 1.5 3v13h5V7c0-1 0-3 1.5-3"/><path d="M12 14v6"/></symbol>
