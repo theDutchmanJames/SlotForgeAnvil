@@ -2,6 +2,7 @@
 // measuring and picking. Z is up; the car stands on Z = 0 with its front at low X.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 
@@ -91,6 +92,7 @@ export class Viewport {
     if (target) this.controls.target.copy(target);
     this.controls.addEventListener('change', () => this.render());
     this.setOrbitButton(this.orbitButton ?? 'left');
+    if (this.transform) this.transform.camera = this.camera;
   }
 
   // Which mouse button turns the view: left in look mode, right while a tool uses the left.
@@ -616,6 +618,93 @@ export class Viewport {
     this.guide = mesh;
     this.scene.add(mesh);
     this.render();
+  }
+
+  // ------------------------------------------------------------ cut off
+
+  // The cutting planes of Cut off. state: { cuts, active, mirror, mode
+  // ('translate' | 'rotate' | 'scale') } or null. The active plane gets
+  // handles; onChange(cut) gets it back after each drag, as
+  // { at, normal, up, w, h }. Mirror copies show as outlines.
+  setCutter(state, onChange) {
+    this.cutterChange = onChange;
+    if (!this.cutters) {
+      this.cutters = new THREE.Group();
+      this.scene.add(this.cutters);
+    }
+    for (const c of this.cutters.children) c.traverse((o) => o.geometry?.dispose());
+    this.cutters.clear();
+    if (!state?.cuts?.length) {
+      if (this.transform) {
+        this.transform.detach();
+        this.transform.enabled = false;
+        this.transform.getHelper().visible = false;
+      }
+      return this.render();
+    }
+    const make = (cut, kind) => {
+      const g = new THREE.Group();
+      const n = new THREE.Vector3(...cut.normal).normalize();
+      let up = new THREE.Vector3(...(cut.up ?? [0, 0, 1]));
+      up.addScaledVector(n, -up.dot(n));
+      if (up.lengthSq() < 1e-9) up = new THREE.Vector3().crossVectors(n, Math.abs(n.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0));
+      up.normalize();
+      const v = new THREE.Vector3().crossVectors(n, up);
+      g.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(up, v, n));
+      g.position.set(...cut.at);
+      g.scale.set(cut.w, cut.h, Math.min(cut.w, cut.h));
+      const color = kind === 'active' ? 0xe5484d : kind === 'copy' ? 0xf0a0a3 : 0xc0646a;
+      const geo = new THREE.PlaneGeometry(1, 1);
+      const face = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: kind === 'active' ? 0.28 : 0.14, side: THREE.DoubleSide, depthWrite: false }));
+      face.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color })));
+      face.renderOrder = 4;
+      g.add(face);
+      // An arrow towards the side that goes.
+      const arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), 0.7, color, 0.22, 0.14);
+      g.add(arrow);
+      this.cutters.add(g);
+      return g;
+    };
+    let active = null;
+    state.cuts.forEach((cut, i) => {
+      const g = make(cut, i === state.active ? 'active' : 'other');
+      if (i === state.active) active = g;
+      if (state.mirror) make({ ...cut, at: [cut.at[0], -cut.at[1], cut.at[2]], normal: [cut.normal[0], -cut.normal[1], cut.normal[2]], up: cut.up && [cut.up[0], -cut.up[1], cut.up[2]] }, 'copy');
+    });
+    if (!this.transform) {
+      this.transform = new TransformControls(this.camera, this.canvas);
+      this.transform.setSpace('local');
+      this.transform.addEventListener('change', () => this.render());
+      this.transform.addEventListener('dragging-changed', (e) => {
+        this.controls.enabled = !e.value;
+        this.cutterDragging = e.value;
+        if (!e.value && this.transform.object) this.cutterChange?.(this.cutOf(this.transform.object));
+      });
+      this.transform.addEventListener('objectChange', () => {
+        const o = this.transform.object;
+        if (!o) return;
+        // Keep the arrow and the depth in step with the smaller side.
+        o.scale.z = Math.min(o.scale.x, o.scale.y);
+        this.cutterMoved?.(this.cutOf(o));
+      });
+      this.scene.add(this.transform.getHelper());
+    }
+    this.transform.camera = this.camera;
+    this.transform.enabled = !!active;
+    this.transform.getHelper().visible = !!active;
+    this.transform.setMode(state.mode ?? 'translate');
+    this.transform.showZ = state.mode !== 'scale';
+    if (active) this.transform.attach(active);
+    else this.transform.detach();
+    this.render();
+  }
+
+  cutOf(o) {
+    const q = o.quaternion;
+    const u = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+    const n = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
+    const r = (x) => Math.round(x * 1e4) / 1e4;
+    return { at: o.position.toArray().map(r), normal: n.toArray().map(r), up: u.toArray().map(r), w: r(Math.abs(o.scale.x)), h: r(Math.abs(o.scale.y)) };
   }
 
   tiltedGuide(axis, at, color, { tilt, lean, pivot }, size, center) {

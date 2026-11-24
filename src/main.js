@@ -17,6 +17,7 @@ import { Viewport } from './viewport.js';
 import { encodeSTL } from './geometry/stl-mesh.js';
 import { AXES, bounds, encodeRuns, runCount } from './geometry/engine.js';
 import { partPieces } from './geometry/finish.js';
+import { cutoffPreview } from './geometry/cutoff.js';
 import { fitReport, suggestChassis } from './geometry/chassis.js';
 import { flareBlows } from './geometry/arches.js';
 import { applyOrient, guessOrient } from './geometry/engine.js';
@@ -89,6 +90,7 @@ const ui = {
   lastView: '3d',
   scale: { mode: 'from', from: null, to: 24, factor: 1, length: null, dim: 0 },
   slice: { axis: 'z', at: null, keep: 'above', tilt: 0, lean: 'x' },
+  cutoff: { cuts: [], active: 0, mirror: false, open: false, mode: 'translate', editingId: null },
   measure: [],
   saved: 'none',
   busy: false,
@@ -150,6 +152,8 @@ $('#app').innerHTML = `
 <footer class="status" id="status"></footer>`;
 
 const viewport = new Viewport($('#view'));
+// For checks in the browser while developing; not in the built app.
+if (import.meta.env.DEV) globalThis.__anvil = { get ui() { return ui; }, viewport, get result() { return result; }, applyGuide: () => applyGuide(), renderPanel: () => renderPanel() };
 
 // ------------------------------------------------------------ geometry worker
 
@@ -265,6 +269,7 @@ async function startProject(p, alreadyLoaded = false, panel = 'home') {
   partsShown = null;
   viewport.setExtras(null);
   ui.slice.at = ui.slice.pivot = null;
+  Object.assign(ui.cutoff, { cuts: [], active: 0, editingId: null });
   ui.scale.length = null;
   ui.scale.from = null;
   setPointer('look');
@@ -327,7 +332,7 @@ function addOrUpdateStep(type, params) {
       const step = { id: newId(), type, enabled: true, params };
       project.steps.push(step);
       ui.editStep = step.id;
-      ui.scale.editingId = ui.slice.editingId = null;
+      ui.scale.editingId = ui.slice.editingId = ui.cutoff.editingId = null;
     }
   });
 }
@@ -356,7 +361,7 @@ const MENUS = [
   {
     id: 'shape',
     name: 'Shape',
-    tools: [['slice', 'slice', 'Slice'], ['select', 'trash', 'Delete selection'], ['smooth', 'smooth', 'Smooth'], ['addpart', 'plus', 'Add part']],
+    tools: [['slice', 'slice', 'Slice'], ['cutoff', 'cutoff', 'Cut off'], ['select', 'trash', 'Delete selection'], ['smooth', 'smooth', 'Smooth'], ['addpart', 'plus', 'Add part']],
   },
   {
     id: 'windows',
@@ -525,6 +530,7 @@ function renderPanel() {
     orient: panelOrient,
     scale: panelScale,
     slice: panelSlice,
+    cutoff: panelCutoff,
     select: panelSelect,
     measure: panelMeasure,
     stepinfo: panelStepInfo,
@@ -646,6 +652,82 @@ const KEEP_NAMES = {
   z: { below: 'Below', above: 'Above' },
 };
 
+// ------------------------------------------------------------ cut off
+
+function panelCutoff(editing) {
+  const s = ui.cutoff,
+    u = project.units;
+  if (editing && s.editingId !== editing.id) {
+    Object.assign(s, { mirror: false, open: false }, structuredClone(editing.params), { active: 0, editingId: editing.id });
+  }
+  if (!editing) s.editingId = null;
+  const placing = ui.pointer === 'cutplace';
+  const intro = head(editing ? 'Change cut off step' : 'Cut off', 'Take off a part such as a mirror or a spoiler. Put a small cutting plane across where it joins the body: only what the plane cuts free goes, the rest stays.');
+  const placeBtn = (label) =>
+    placing
+      ? `<div class="note">Click on the model where the part joins the body. <button class="btn sm ghost" data-act="cut-place-stop">Cancel</button></div>`
+      : `<button class="btn sm${s.cuts.length ? '' : ' primary'}" data-act="cut-place">${icon('cutoff')}${label}</button>`;
+  if (!s.cuts.length) return `${intro}<div class="row">${placeBtn('Place a cutting plane')}</div><div class="muted" style="font-size:12px">Works best before Hollow: on a hollow body the cut is closed with a ring.</div>`;
+  s.active = Math.min(s.active, s.cuts.length - 1);
+  const c = s.cuts[s.active];
+  const pv = editing ? null : cutoffPreviewNow();
+  const status = editing
+    ? '<div class="note">Change the planes, then Update step. The red part shows before a new cut only.</div>'
+    : pv?.error
+      ? `<div class="note warn">${pv.error}</div>`
+      : pv
+        ? `<div class="note">The part shown in red goes: ${pv.share < 0.001 ? 'under 0.1' : round(pv.share * 100, 1)}% of the model.</div>`
+        : '';
+  return `${intro}
+    ${s.cuts.length > 1 || !placing ? `<div class="f">Cutting planes<div class="row"><span class="seg">${s.cuts.map((_, i) => `<button data-act="cut-pick" data-v="${i}" class="${i === s.active ? 'on' : ''}">${i + 1}</button>`).join('')}</span>${placeBtn('Add one')}${s.cuts.length > 1 ? `<button class="btn sm ghost icon" data-act="cut-remove" title="Remove plane ${s.active + 1}">${icon('x')}</button>` : ''}</div></div>` : placeBtn('')}
+    <div class="f">Drag in the view to<span class="seg">${[['translate', 'Move'], ['rotate', 'Turn'], ['scale', 'Size']].map(([m, n]) => `<button data-act="cut-mode" data-v="${m}" class="${s.mode === m ? 'on' : ''}">${n}</button>`).join('')}</span></div>
+    <div class="f">Size<div class="row">${numField('cut-w', round(toUnits(c.w, u), 2), u)}<span class="muted">×</span>${numField('cut-h', round(toUnits(c.h, u), 2), u)}</div></div>
+    <div class="f">Push along the arrow<div class="row"><button class="btn sm icon" data-act="cut-push" data-v="-0.2" title="Move 0.2 mm back">−</button><span class="muted">0.2 mm</span><button class="btn sm icon" data-act="cut-push" data-v="0.2" title="Move 0.2 mm on">+</button><button class="btn sm" data-act="cut-flip">Flip side</button></div><div class="muted" style="font-weight:400;font-size:12px">The arrow points to the part that goes.</div></div>
+    <label class="chk"><input type="checkbox" data-field="cut-mirror" ${s.mirror ? 'checked' : ''}>Cut the other side too (mirrors)</label>
+    <label class="chk"><input type="checkbox" data-field="cut-open" ${s.open ? 'checked' : ''}>Leave the cut open</label>
+    ${status}
+    <div class="row"><button class="btn primary sm" data-act="cut-apply"${!editing && pv?.error ? ' disabled' : ''}>${editing ? 'Update step' : 'Cut off'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>`;
+}
+
+function cutoffParams() {
+  const s = ui.cutoff;
+  return { cuts: structuredClone(s.cuts), ...(s.mirror ? { mirror: true } : {}), ...(s.open ? { open: true } : {}) };
+}
+
+// What the cut would take off, worked out on the model shown. Kept until
+// the planes or the model change.
+let cutPreview = { key: null, value: null };
+function cutoffPreviewNow() {
+  const key = JSON.stringify(cutoffParams());
+  if (cutPreview.key !== key || cutPreview.result !== result) {
+    cutPreview = { key, result, value: cutoffPreview(result, cutoffParams()) };
+  }
+  return cutPreview.value;
+}
+
+// A new plane where the model was clicked, standing just off the surface and
+// facing out of it.
+function placeCut(hit) {
+  const n = hit.normal.clone().normalize();
+  const len = result.stats.bounds.size[0];
+  const at = hit.point.clone().addScaledVector(n, len * 0.006);
+  const up = Math.abs(n.z) > 0.9 ? [1, 0, 0] : [0, 0, 1];
+  const side = round(Math.max(2, len * 0.06), 2);
+  const r = (x) => round(x, 4);
+  ui.cutoff.cuts.push({ at: at.toArray().map(r), normal: n.toArray().map(r), up, w: side, h: side });
+  ui.cutoff.active = ui.cutoff.cuts.length - 1;
+  ui.cutoff.mode = 'translate';
+  setPointer('look');
+  renderPanel();
+  applyGuide();
+}
+
+function cutChanged(cut) {
+  ui.cutoff.cuts[ui.cutoff.active] = cut;
+  renderPanel();
+  applyGuide();
+}
+
 // A tilted cut slopes along one of the other two directions, about the
 // middle of the model in that direction.
 const SLICE_LEAN = { x: 'z', y: 'z', z: 'x' };
@@ -744,8 +826,8 @@ function panelStepInfo(editing) {
 
 // ------------------------------------------------------------ repair panels
 
-const STEP_PANEL = { orient: 'orient', scale: 'scale', slice: 'slice', delete: 'stepinfo', repair: 'fix', fill: 'openings', reduce: 'reduce', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
-const STEP_MENU = { windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', reduce: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', posts: 'posts' };
+const STEP_PANEL = { orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', reduce: 'reduce', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
+const STEP_MENU = { windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', cutoff: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', reduce: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', posts: 'posts' };
 
 // Results the worker works out on request, kept until the shape changes.
 const lookups = {
@@ -2249,6 +2331,8 @@ function stepDetail(step, info) {
   if (step.type === 'scale') return `× ${round(p.factor, 4)}`;
   if (step.type === 'slice')
     return `${AXIS_NAMES[p.axis].toLowerCase()} at ${fmtLen(p.at, u)}${p.tilt ? `, tilted ${p.tilt}° along the ${LEAN_NAMES[p.lean]}` : ''} · keep ${p.keep === 'both' ? 'both' : KEEP_NAMES[p.axis][p.keep].toLowerCase()}${p.cap ? ' · closed' : ''}`;
+  if (step.type === 'cutoff')
+    return `${p.cuts.length} cut${p.cuts.length === 1 ? '' : 's'}${p.mirror ? ', mirrored' : ''}${p.open ? ' · left open' : ''}${info?.changed ? ` · ${info.changed.toLocaleString()} triangles off` : ''}`;
   if (step.type === 'delete')
     return p.label === 'parts' ? `${p.parts} part${p.parts === 1 ? '' : 's'} removed` : `${runCount(p.faces).toLocaleString()} triangles${p.patch === 'smooth' ? ' · patched' : ''}`;
   if (step.type === 'repair') {
@@ -2344,6 +2428,18 @@ function applyGuide() {
     viewport.planeGuide(s.axis, s.at, undefined, s.tilt && s.lean !== s.axis ? { tilt: s.tilt, lean: s.lean, pivot: s.pivot ?? slicePivot(s.lean) } : null);
   }
   else viewport.planeGuide(null);
+  // Cut off: the planes with their handles, and the part that goes in red.
+  const cutting = result && ((ui.panel === 'cutoff' && !ui.editStep) || editing?.type === 'cutoff');
+  const s = ui.cutoff;
+  viewport.setCutter(cutting && s.cuts.length ? { cuts: s.cuts, active: s.active, mirror: s.mirror, mode: s.mode } : null, cutChanged);
+  const pv = cutting && !editing && s.cuts.length ? cutoffPreviewNow() : null;
+  if (pv?.faces) {
+    viewport.paintSelection(pv.faces);
+    ui.cutPainted = true;
+  } else if (ui.cutPainted) {
+    ui.cutPainted = false;
+    viewport.paintSelection(selection);
+  }
 }
 
 // ------------------------------------------------------------ selection
@@ -2565,6 +2661,7 @@ canvas.addEventListener('pointerup', (e) => {
     else if (d.mode === 'replace') applyFaces([], 'replace');
   } else if ((ui.pointer === 'distance' || ui.pointer === 'wall') && hit) measureClick(hit);
   else if (ui.pointer === 'post' && hit) placePost(hit);
+  else if (ui.pointer === 'cutplace' && hit) placeCut(hit);
 });
 
 function brushAt(e, hit = viewport.pick(e)) {
@@ -2633,6 +2730,7 @@ const actions = {
       if (!ui.look.thickness) actions.look('thickness');
     }
     if (!['select', 'paint', 'hammer', 'posts'].includes(v) && ui.pointer !== 'look' && !['distance', 'wall'].includes(ui.pointer)) setPointer('look');
+    if (v === 'cutoff' && !ui.cutoff.cuts.length) setPointer('cutplace');
     if ((v === 'select' || v === 'smooth') && protectActive()) lookup('skins');
     if (v === 'posts' && project.chassis) ui.look.chassis = true;
     applyGuide();
@@ -2756,6 +2854,47 @@ const actions = {
     ui.slice.pivot = null;
     renderPanel();
     applyGuide();
+  },
+  'cut-place'() {
+    setPointer('cutplace');
+    renderPanel();
+  },
+  'cut-place-stop'() {
+    setPointer('look');
+    renderPanel();
+  },
+  'cut-pick'(v) {
+    ui.cutoff.active = Number(v);
+    renderPanel();
+    applyGuide();
+  },
+  'cut-remove'() {
+    ui.cutoff.cuts.splice(ui.cutoff.active, 1);
+    ui.cutoff.active = Math.max(0, ui.cutoff.active - 1);
+    renderPanel();
+    applyGuide();
+  },
+  'cut-mode'(v) {
+    ui.cutoff.mode = v;
+    renderPanel();
+    applyGuide();
+  },
+  'cut-flip'() {
+    const c = ui.cutoff.cuts[ui.cutoff.active];
+    c.normal = c.normal.map((x) => -x);
+    renderPanel();
+    applyGuide();
+  },
+  'cut-push'(v) {
+    const c = ui.cutoff.cuts[ui.cutoff.active];
+    const l = Math.hypot(...c.normal);
+    c.at = c.at.map((x, i) => round(x + (Number(v) * c.normal[i]) / l, 4));
+    renderPanel();
+    applyGuide();
+  },
+  'cut-apply'() {
+    if (!ui.cutoff.cuts.length) return;
+    addOrUpdateStep('cutoff', cutoffParams());
   },
   'slice-keep'(v) {
     ui.slice.keep = v;
@@ -3443,6 +3582,15 @@ document.addEventListener('change', (e) => {
   } else if (f === 'slice-gap') {
     if (v >= 0) ui.slice.gap = fromUnits(v, u);
     return;
+  } else if (f === 'cut-w' || f === 'cut-h') {
+    const c = ui.cutoff.cuts[ui.cutoff.active];
+    if (c && v > 0) c[f === 'cut-w' ? 'w' : 'h'] = round(fromUnits(v, u), 4);
+    renderPanel();
+    return applyGuide();
+  } else if (f === 'cut-mirror' || f === 'cut-open') {
+    ui.cutoff[f === 'cut-mirror' ? 'mirror' : 'open'] = e.target.checked;
+    renderPanel();
+    return applyGuide();
   } else if (f === 'slice-tilt') {
     if (Number.isFinite(v) && Math.abs(v) <= 80) ui.slice.tilt = v;
     renderPanel();

@@ -41,6 +41,7 @@ export const STEP_NAMES = {
   orient: 'Orient',
   scale: 'Scale',
   slice: 'Slice',
+  cutoff: 'Cut off',
   delete: 'Delete selection',
   floor: 'Floor line',
   hollow: 'Hollow',

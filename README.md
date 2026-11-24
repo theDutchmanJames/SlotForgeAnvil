@@ -88,6 +88,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 
 ### Shape and finish
 
+- **Cut off:** take off mirrors, a spoiler or other add-ons with a small cutting plane you move, turn and size in the 3D view. Only what the plane cuts free goes, it shows in red first, and the cut is closed flat. Mirrors on both sides go in one step.
 - **Delete and patch, smooth, slice:** remove areas and patch the hole, smooth with a brush while sharp edges stay, or slice the body, straight or at an angle you choose, to trim it or print it in parts.
 - **Add parts:** load a wing, scoop, mirror or driver, place it, and join it to the body or keep it as its own print.
 - **Protect outside:** once the body is hollowed, selecting and smoothing only touch the inside of the wall.

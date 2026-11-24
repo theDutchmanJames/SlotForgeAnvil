@@ -18,6 +18,7 @@ import { applyWindows } from './windows.js';
 import { applyAddPart, applySmooth, capPlane } from './finish.js';
 import { boundaryLoops, pairEdges, splitTouching } from './topology.js';
 import { fillLoop } from './fill.js';
+import { applyCutoff } from './cutoff.js';
 
 export const AXES = ['+x', '-x', '+y', '-y', '+z', '-z'];
 const unitOf = (axis) => {
@@ -356,6 +357,7 @@ const OPS = {
   orient: applyOrient,
   scale: applyScale,
   slice: applySlice,
+  cutoff: applyCutoff,
   delete: applyDelete,
   repair: applyRepair,
   fill: applyFill,

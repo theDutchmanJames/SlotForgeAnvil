@@ -107,6 +107,12 @@ export function capPlane(mesh, axis, at, tol = 1e-4, tilted = null) {
     const [i, j] = [0, 1, 2].filter((c) => c !== k);
     flatten = (v) => new Vector2(P[v * 3 + i], P[v * 3 + j]);
   }
+  return capLoops(mesh, loops, flatten);
+}
+
+// Close the given openings (all in one plane) flat. flatten(v) lays a corner
+// out in that plane, as a Vector2.
+export function capLoops(mesh, loops, flatten) {
   const flat = loops.map((l) => l.map(flatten));
   const area = (pts) => pts.reduce((s, p, n) => s + p.x * pts[(n + 1) % pts.length].y - pts[(n + 1) % pts.length].x * p.y, 0) / 2;
   const inside = (p, pts) => {
@@ -136,7 +142,7 @@ export function capPlane(mesh, axis, at, tol = 1e-4, tilted = null) {
   const idx = new Uint32Array(mesh.indices.length + faces.length);
   idx.set(mesh.indices);
   idx.set(faces, mesh.indices.length);
-  return { mesh: { positions: P, indices: idx }, capped: loops.filter((_, n) => depth[n] % 2 === 0).length };
+  return { mesh: { positions: mesh.positions, indices: idx }, capped: loops.filter((_, n) => depth[n] % 2 === 0).length };
 }
 
 // ------------------------------------------------------------ add a part
