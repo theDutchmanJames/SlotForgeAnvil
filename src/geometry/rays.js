@@ -18,6 +18,20 @@ export function rayCaster(positions, indices) {
   };
 }
 
+// How many surfaces a ray passes through: odd means the start is inside a closed body.
+export function rayCounter(positions, indices) {
+  const geo = new BufferGeometry();
+  geo.setAttribute('position', new BufferAttribute(positions, 3));
+  geo.setIndex(new BufferAttribute(Uint32Array.from(indices), 1));
+  const bvh = new MeshBVH(geo);
+  const ray = new Ray();
+  const o = new Vector3(), d = new Vector3();
+  return (origin, dir) => {
+    ray.set(o.set(origin[0], origin[1], origin[2]), d.set(dir[0], dir[1], dir[2]));
+    return bvh.raycast(ray, DoubleSide).length;
+  };
+}
+
 export function faceFrame(positions, indices, f) {
   const a = indices[f * 3] * 3, b = indices[f * 3 + 1] * 3, c = indices[f * 3 + 2] * 3;
   const centre = [0, 1, 2].map((k) => (positions[a + k] + positions[b + k] + positions[c + k]) / 3);

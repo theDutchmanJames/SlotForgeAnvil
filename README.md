@@ -57,6 +57,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 - **Open any STL:** drop it on the window or use Open. Anvil finds which way is front and up, and straightens a car that sits at an angle in the file.
 - **A check on every import:** what kind of model it is (solid, hollow shell, single skin or many parts), how thick its walls are, and what is wrong with it.
 - **Light fix:** removes specks and broken triangles, untangles touching surfaces, turns inside-out areas round and closes small holes, without moving the surface you see.
+- **Make solid:** turn a hollow shell into a solid. The inner skin and anything loose inside (seats, a dashboard) goes, the windows are closed, and the underside is cut off flat at the height you choose, wheel arches included. The inner skin shows in red first.
 - **Parts, openings and reduce:** tick which loose parts to keep, close chosen openings with a flat or smooth patch, and thin out the triangles where the surface allows it.
 
 ### Scale it

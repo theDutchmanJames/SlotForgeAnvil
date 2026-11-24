@@ -343,7 +343,7 @@ const MENUS = [
   {
     id: 'repair',
     name: 'Repair',
-    tools: [['check', 'checklist', 'Check'], ['fix', 'wrench', 'Light fix'], ['parts', 'parts', 'Parts'], ['openings', 'fill', 'Close openings'], ['reduce', 'reduce', 'Reduce']],
+    tools: [['check', 'checklist', 'Check'], ['fix', 'wrench', 'Light fix'], ['parts', 'parts', 'Parts'], ['openings', 'fill', 'Close openings'], ['solid', 'solid', 'Make solid'], ['reduce', 'reduce', 'Reduce']],
     later: [['Rebuild', 'Remakes a badly broken model as one solid. Comes later.']],
   },
   { id: 'scale', name: 'Scale', tools: [['orient', 'orient', 'Orient'], ['scale', 'scale', 'Scale']] },
@@ -538,6 +538,7 @@ function renderPanel() {
     fix: panelFix,
     parts: panelParts,
     openings: panelOpenings,
+    solid: panelSolid,
     reduce: panelReduce,
     chassis: panelChassis,
     tyres: panelTyres,
@@ -826,8 +827,8 @@ function panelStepInfo(editing) {
 
 // ------------------------------------------------------------ repair panels
 
-const STEP_PANEL = { orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', reduce: 'reduce', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
-const STEP_MENU = { windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', cutoff: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', reduce: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', posts: 'posts' };
+const STEP_PANEL = { orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', solid: 'solid', reduce: 'reduce', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
+const STEP_MENU = { windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', cutoff: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', solid: 'repair', reduce: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', posts: 'posts' };
 
 // Results the worker works out on request, kept until the shape changes.
 const lookups = {
@@ -836,6 +837,7 @@ const lookups = {
   openings: { token: -1, value: null, busy: false },
   thickness: { token: -1, value: null, busy: false },
   skins: { token: -1, value: null, busy: false },
+  solid: { token: -1, value: null, busy: false },
 };
 function lookup(name) {
   const l = lookups[name];
@@ -912,7 +914,7 @@ function panelCheck() {
   return `${head('Check', `${c.triangles.toLocaleString()} triangles`)}
     <div class="kinds">${KINDS.map(([k, n, d]) => `<div class="kind${c.kind === k ? ' on' : ''}"><b>${n}</b>${d}</div>`).join('')}</div>
     <div class="verdict">${VERDICT[c.kind]}</div>
-    ${c.kind === 'shell' && c.wall ? `<div class="muted" style="margin-top:-6px">Walls about ${fmtLen(c.wall, u)} thick.</div>` : ''}
+    ${c.kind === 'shell' && c.wall ? `<div class="muted" style="margin-top:-6px">Walls about ${fmtLen(c.wall, u)} thick. To slice it closed all the way across, <button class="btn sm ghost" data-act="final-go" data-v="solid">make it solid</button> first.</div>` : ''}
     <div class="crows">${rows.join('')}</div>
     ${expect}${coarse}
     ${fixable ? '<div class="row"><button class="btn primary sm" data-act="fix-now">' + icon('wrench') + 'Light fix</button><button class="btn ghost sm" data-act="tool" data-v="fix">Choose what to fix</button></div>' : ''}`;
@@ -994,6 +996,43 @@ function panelOpenings(editing) {
     <div class="plist">${rows}</div>
     <div class="f">Patch<span class="seg"><button data-act="fill-mode" data-v="smooth" class="${ui.fillMode === 'smooth' ? 'on' : ''}">Smooth</button><button data-act="fill-mode" data-v="flat" class="${ui.fillMode === 'flat' ? 'on' : ''}">Flat</button></span></div>
     <button class="btn primary sm" data-act="fill-apply"${ui.closeLoops.size ? '' : ' disabled'}>Close ${ui.closeLoops.size || ''} opening${ui.closeLoops.size === 1 ? '' : 's'}</button>`;
+}
+
+// Make solid's flat bottom: 10% of the height above the lowest point, to start with.
+const solidDefault = () => {
+  const b = result.stats.bounds;
+  return { flat: true, bottom: round(b.min[2] + b.size[2] * 0.1, 2) };
+};
+
+function panelSolid(editing) {
+  ui.solid ??= solidDefault();
+  if (editing && ui.solidFor !== editing.id) {
+    const p = editing.params;
+    ui.solid = p.bottom != null ? { flat: true, bottom: p.bottom } : { ...solidDefault(), flat: false };
+    ui.solidFor = editing.id;
+  }
+  if (!editing) ui.solidFor = null;
+  const u = project.units;
+  const intro = head(editing ? 'Change make solid' : 'Make solid', 'Turns a hollow shell into a solid: the inner skin goes and the windows and underside are closed. To make it a body again later, set a Floor line and Hollow it.');
+  const open = `<label class="chk"><input type="checkbox" data-field="solid-flat" ${ui.solid.flat ? 'checked' : ''}>Cut the underside off flat</label>
+    ${ui.solid.flat ? `<div class="f">Flat bottom at<div class="row">${numField('solid-bottom', round(toUnits(ui.solid.bottom, u), 3), u)}</div>
+      <div class="muted" style="font-weight:400;font-size:12px">Everything below this height goes, and the body is closed flat there, wheel arches included. Do this here rather than with a slice afterwards: a slice through a closed-up underside cannot always close it again.</div></div>`
+    : '<div class="muted" style="font-size:12px">The underside is closed with walls straight down from its edge to its lowest point.</div>'}`;
+  if (editing) {
+    const info = result.results.find((r) => r.id === editing.id)?.info;
+    return `${intro}
+      ${info ? `<div class="note">${info.removed.toLocaleString()} triangles of inner skin removed${info.inside ? `, ${info.inside} loose piece${info.inside === 1 ? '' : 's'} inside` : ''}${info.closed ? `, ${info.closed} opening${info.closed === 1 ? '' : 's'} closed` : ''}.</div>` : ''}
+      ${open}
+      <div class="row"><button class="btn primary sm" data-act="solid-apply">Update step</button><button class="btn ghost sm" data-act="stop-edit">Done</button></div>`;
+  }
+  const pv = lookup('solid');
+  if (!pv) return `${intro}<div class="note">Finding the inner skin…</div>`;
+  if (pv.error) return `${intro}<div class="note warn">${esc(pv.error)}</div>`;
+  return `${intro}
+    <div class="note">The inner skin shown in red goes: ${pv.gone.toLocaleString()} triangles, ${Math.round(pv.share * 100)}% of the model. The wall was about ${fmtLen(pv.wall, project.units)} thick. Loose pieces left inside the body, such as seats, go too.</div>
+    ${pv.share > 0.6 ? '<div class="note warn">That is more than half of the model. Check the red part is really the inside before going on.</div>' : ''}
+    ${open}
+    <div class="row"><button class="btn primary sm" data-act="solid-apply">${icon('solid')}Make solid</button></div>`;
 }
 
 let hoverLoop = null;
@@ -2322,7 +2361,7 @@ function panelFinal() {
     <div class="row"><button class="btn primary sm" data-act="export">${icon('export')}Export STL</button>${buck.result ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export buck</button>` : ''}</div>`;
 }
 
-const TOOL_MENU = { fix: 'repair', openings: 'repair', parts: 'repair', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck' };
+const TOOL_MENU = { fix: 'repair', openings: 'repair', parts: 'repair', solid: 'repair', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck' };
 
 function stepDetail(step, info) {
   const p = step.params,
@@ -2361,6 +2400,8 @@ function stepDetail(step, info) {
     return `${p.windows.length} window${p.windows.length === 1 ? '' : 's'}${info ? ` · ${info.cut} cut` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
   if (step.type === 'posts')
     return `${p.posts.length} × ${p.type?.name ?? 'post'}${p.length > 0 ? `, ${fmtLen(p.length, u, 1)} long` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
+  if (step.type === 'solid')
+    return `${info ? `${info.removed.toLocaleString()} triangles of inner skin removed` : 'inner skin removed'}${p.bottom != null ? ` · flat bottom at ${fmtLen(p.bottom, u)}` : ''}`;
   if (step.type === 'fill') return `${p.loops.length} opening${p.loops.length === 1 ? '' : 's'} · ${p.mode}`;
   if (step.type === 'reduce')
     return info ? `${info.after.toLocaleString()} of ${info.before.toLocaleString()} triangles · within ${fmtLen(info.moved, u, 3)}` : `keep ${Math.round(p.target * 100)}%`;
@@ -2427,12 +2468,15 @@ function applyGuide() {
     const s = ui.slice;
     viewport.planeGuide(s.axis, s.at, undefined, s.tilt && s.lean !== s.axis ? { tilt: s.tilt, lean: s.lean, pivot: s.pivot ?? slicePivot(s.lean) } : null);
   }
+  else if (result && ui.solid?.flat && (editing ? editing.type === 'solid' : ui.panel === 'solid')) viewport.planeGuide('z', ui.solid.bottom);
   else viewport.planeGuide(null);
   // Cut off: the planes with their handles, and the part that goes in red.
   const cutting = result && ((ui.panel === 'cutoff' && !ui.editStep) || editing?.type === 'cutoff');
   const s = ui.cutoff;
   viewport.setCutter(cutting && s.cuts.length ? { cuts: s.cuts, active: s.active, mirror: s.mirror, mode: s.mode } : null, cutChanged);
-  const pv = cutting && !editing && s.cuts.length ? cutoffPreviewNow() : null;
+  let pv = cutting && !editing && s.cuts.length ? cutoffPreviewNow() : null;
+  // Make solid: the inner skin that goes, in red.
+  if (!pv && result && ui.panel === 'solid' && !ui.editStep && lookups.solid.token === buildToken) pv = lookups.solid.value;
   if (pv?.faces) {
     viewport.paintSelection(pv.faces);
     ui.cutPainted = true;
@@ -2720,6 +2764,7 @@ const actions = {
     if (v === 'parts') ui.partsDrop = null;
     if (v === 'openings') ui.closeLoops = new Set();
     if (v === 'fix') ui.fixOpts = null;
+    if (v === 'solid') ui.solid = null;
     if (['chassis', 'tyres', 'arches', 'stretch'].includes(v) && project.chassis) ui.look.chassis = true;
     if (v === 'select' && !['brush', 'lasso', 'connected'].includes(ui.pointer)) setPointer('brush');
     else if (v === 'hammer') setPointer('hammer');
@@ -2945,6 +2990,10 @@ const actions = {
     if (!list || !ui.closeLoops.size) return;
     addOrUpdateStep('fill', { loops: [...ui.closeLoops].sort((a, b) => a - b), mode: ui.fillMode, count: list.length });
     ui.closeLoops = new Set();
+  },
+  'solid-apply'() {
+    const s = ui.solid;
+    addOrUpdateStep('solid', { bottom: s?.flat ? round(s.bottom, 4) : null });
   },
   'reduce-apply'() {
     addOrUpdateStep('reduce', { target: ui.reduce.keep / 100, tolerance: reduceTolerance() });
@@ -3586,6 +3635,14 @@ document.addEventListener('change', (e) => {
     const c = ui.cutoff.cuts[ui.cutoff.active];
     if (c && v > 0) c[f === 'cut-w' ? 'w' : 'h'] = round(fromUnits(v, u), 4);
     renderPanel();
+    return applyGuide();
+  } else if (f === 'solid-flat') {
+    ui.solid.flat = e.target.checked;
+    renderPanel();
+    return;
+  } else if (f === 'solid-bottom') {
+    const v = fromUnits(parseFloat(e.target.value), project.units);
+    if (Number.isFinite(v)) ui.solid.bottom = v;
     return applyGuide();
   } else if (f === 'cut-mirror' || f === 'cut-open') {
     ui.cutoff[f === 'cut-mirror' ? 'mirror' : 'open'] = e.target.checked;

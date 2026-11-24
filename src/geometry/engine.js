@@ -19,6 +19,7 @@ import { applyAddPart, applySmooth, capPlane } from './finish.js';
 import { boundaryLoops, pairEdges, splitTouching } from './topology.js';
 import { fillLoop } from './fill.js';
 import { applyCutoff } from './cutoff.js';
+import { applySolid } from './solid.js';
 
 export const AXES = ['+x', '-x', '+y', '-y', '+z', '-z'];
 const unitOf = (axis) => {
@@ -361,6 +362,7 @@ const OPS = {
   delete: applyDelete,
   repair: applyRepair,
   fill: applyFill,
+  solid: applySolid,
   reduce: applyReduce,
   floor: applyFloor,
   hollow: applyHollow,

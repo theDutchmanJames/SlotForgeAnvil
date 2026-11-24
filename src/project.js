@@ -54,6 +54,7 @@ export const STEP_NAMES = {
   addpart: 'Add part',
   repair: 'Light fix',
   fill: 'Close openings',
+  solid: 'Make solid',
   reduce: 'Reduce',
 };
 
