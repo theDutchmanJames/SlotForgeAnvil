@@ -202,14 +202,42 @@ export function applyScale(mesh, { factor }) {
 
 // ---------------------------------------------------------------- slice
 
-// Cut with the plane axis = at and keep one side, or both (moved `gap` apart,
-// to print in two). The cut stays open, which is what a body shell needs,
-// unless cap is asked: then it is closed flat (a ring on a shell).
-export function applySlice(mesh, { axis, at, keep, cap = false, gap = 10 }) {
+// The cutting plane. Without a tilt it is axis = at. With one it is turned by
+// `tilt` degrees so that it slopes along the `lean` axis, about the line
+// where lean = pivot (and axis = at). Returns the signed distance of a point
+// (above the plane is positive) and the plane's normal.
+export function slicePlane({ axis, at, tilt = 0, lean, pivot = 0 }) {
+  const k = 'xyz'.indexOf(axis);
+  if (k < 0) throw Error('Choose the direction of the cut.');
+  if (!Number.isFinite(at)) throw Error('Enter where to cut.');
+  if (!tilt) {
+    const normal = [0, 0, 0];
+    normal[k] = 1;
+    return { k, tilted: false, normal, dist: (x, y, z) => [x, y, z][k] - at };
+  }
+  const i = 'xyz'.indexOf(lean);
+  if (i < 0 || i === k) throw Error('Choose which way the cut slopes.');
+  if (!Number.isFinite(tilt) || Math.abs(tilt) > 80) throw Error('Enter a tilt between -80° and 80°.');
+  const a = (tilt * Math.PI) / 180,
+    c = Math.cos(a),
+    s = Math.sin(a);
+  const normal = [0, 0, 0];
+  normal[k] = c;
+  normal[i] = -s;
+  const p = Number.isFinite(pivot) ? pivot : 0;
+  return { k, i, tilted: true, normal, dist: (x, y, z) => { const v = [x, y, z]; return c * (v[k] - at) - s * (v[i] - p); } };
+}
+
+// Cut with the plane axis = at (tilted if asked, see slicePlane) and keep
+// one side, or both (moved `gap` apart, to print in two). The cut stays open,
+// which is what a body shell needs, unless cap is asked: then it is closed
+// flat (a ring on a shell).
+export function applySlice(mesh, { axis, at, keep, cap = false, gap = 10, tilt = 0, lean, pivot }) {
+  const plane = { axis, at, tilt, lean, pivot };
   if (keep === 'both') {
     const k = 'xyz'.indexOf(axis);
-    const lo = applySlice(mesh, { axis, at, keep: 'below', cap });
-    const hi = applySlice(mesh, { axis, at, keep: 'above', cap });
+    const lo = applySlice(mesh, { ...plane, keep: 'below', cap });
+    const hi = applySlice(mesh, { ...plane, keep: 'above', cap });
     const shifted = Float32Array.from(hi.positions, (v, n) => (n % 3 === k ? v + gap : v));
     const off = lo.positions.length / 3;
     const idx = new Uint32Array(lo.indices.length + hi.indices.length);
@@ -220,23 +248,22 @@ export function applySlice(mesh, { axis, at, keep, cap = false, gap = 10 }) {
     pos.set(shifted, lo.positions.length);
     return { positions: pos, indices: idx, info: { changed: lo.info.changed, capped: (lo.info.capped ?? 0) + (hi.info.capped ?? 0) } };
   }
-  const out = sliceOne(mesh, { axis, at, keep });
+  const pl = slicePlane(plane);
+  const out = sliceOne(mesh, pl, at, keep);
   if (!cap) return out;
-  const c = capPlane(out, axis, at);
+  const c = capPlane(out, axis, at, 1e-4, pl.tilted ? pl : null);
   return { positions: c.mesh.positions, indices: c.mesh.indices, info: { ...out.info, capped: c.capped } };
 }
 
-function sliceOne(mesh, { axis, at, keep }) {
-  const k = 'xyz'.indexOf(axis);
-  if (k < 0) throw Error('Choose the direction of the cut.');
-  if (!Number.isFinite(at)) throw Error('Enter where to cut.');
+function sliceOne(mesh, plane, at, keep) {
+  const { k, tilted, dist } = plane;
   if (keep !== 'below' && keep !== 'above') throw Error('Choose which side to keep.');
   const sign = keep === 'below' ? 1 : -1;
   const p = mesh.positions,
     idx = mesh.indices;
   const vcount = p.length / 3;
   const d = new Float64Array(vcount);
-  for (let v = 0; v < vcount; v++) d[v] = sign * (p[v * 3 + k] - at); // <= 0 is kept
+  for (let v = 0; v < vcount; v++) d[v] = sign * dist(p[v * 3], p[v * 3 + 1], p[v * 3 + 2]); // <= 0 is kept
   const pos = Array.from(p);
   const out = [];
   const cutVertex = new Map();
@@ -250,7 +277,7 @@ function sliceOne(mesh, { axis, at, keep }) {
       const t = d[a] / (d[a] - d[b]);
       id = pos.length / 3;
       for (let c = 0; c < 3; c++) pos.push(p[a * 3 + c] + t * (p[b * 3 + c] - p[a * 3 + c]));
-      pos[id * 3 + k] = at;
+      if (!tilted) pos[id * 3 + k] = at;
       cutVertex.set(key, id);
     }
     return id;

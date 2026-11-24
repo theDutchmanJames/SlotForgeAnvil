@@ -62,7 +62,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 ### Scale it
 
 - **From a scale to a scale:** Anvil guesses the file's scale from the car's length; make it **1/32 or 1/24**, or any scale you like.
-- **To a length or by a factor:** or measure a known distance on the car and set the scale from that.
+- **To a length, width or height, or by a factor:** type the width your chassis or class rules ask for, or measure a known distance on the car and set the scale from that.
 - **Millimetres or inches** throughout.
 
 ### Build the shell
@@ -88,7 +88,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 
 ### Shape and finish
 
-- **Delete and patch, smooth, slice:** remove areas and patch the hole, smooth with a brush while sharp edges stay, or slice the body in two to print it in parts.
+- **Delete and patch, smooth, slice:** remove areas and patch the hole, smooth with a brush while sharp edges stay, or slice the body, straight or at an angle you choose, to trim it or print it in parts.
 - **Add parts:** load a wing, scoop, mirror or driver, place it, and join it to the body or keep it as its own print.
 - **Protect outside:** once the body is hollowed, selecting and smoothing only touch the inside of the wall.
 

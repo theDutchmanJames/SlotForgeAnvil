@@ -87,8 +87,8 @@ const ui = {
   frontOnly: { brush: false, lasso: true },
   perspective: false,
   lastView: '3d',
-  scale: { mode: 'from', from: null, to: 24, factor: 1, length: null },
-  slice: { axis: 'z', at: null, keep: 'above' },
+  scale: { mode: 'from', from: null, to: 24, factor: 1, length: null, dim: 0 },
+  slice: { axis: 'z', at: null, keep: 'above', tilt: 0, lean: 'x' },
   measure: [],
   saved: 'none',
   busy: false,
@@ -264,7 +264,7 @@ async function startProject(p, alreadyLoaded = false, panel = 'home') {
   partMeshes.clear();
   partsShown = null;
   viewport.setExtras(null);
-  ui.slice.at = null;
+  ui.slice.at = ui.slice.pivot = null;
   ui.scale.length = null;
   ui.scale.from = null;
   setPointer('look');
@@ -589,10 +589,12 @@ function panelOrient() {
     <div class="note">Length ${fmtLen(b[0], u)} · width ${fmtLen(b[1], u)} · height ${fmtLen(b[2], u)}</div>`;
 }
 
+const SIZE_NAMES = ['length', 'width', 'height'];
+
 function scaleFactor() {
   const s = ui.scale;
   if (s.mode === 'from') return s.from > 0 && s.to > 0 ? s.from / s.to : NaN;
-  if (s.mode === 'length') return s.length > 0 ? s.length / result.stats.bounds.size[0] : NaN;
+  if (s.mode === 'length') return s.length > 0 ? s.length / result.stats.bounds.size[s.dim ?? 0] : NaN;
   return s.factor;
 }
 
@@ -620,16 +622,20 @@ function panelScale(editing) {
   if (s.mode === 'from')
     body = `<div class="f">The file is at<div class="row">1 : ${numField('scale-from', s.from, '')}<span class="muted">${s.from === guessScale(size[0]) ? 'guessed from its length' : '1 = real car size'}</span></div></div>
       <div class="f">Make it<div class="row">1 : ${numField('scale-to', s.to, '')}<span class="seg"><button data-act="scale-to" data-v="32" class="${s.to === 32 ? 'on' : ''}">1:32</button><button data-act="scale-to" data-v="24" class="${s.to === 24 ? 'on' : ''}">1:24</button></span></div></div>`;
-  else if (s.mode === 'length')
-    body = `<div class="f">Length now<div class="row mono">${fmtLen(size[0], u)}</div></div>
-      <div class="f">Make the length<div class="row">${numField('scale-length', s.length ? round(toUnits(s.length, u)) : '', u)}</div></div>`;
+  else if (s.mode === 'length') {
+    const d = s.dim ?? 0,
+      name = SIZE_NAMES[d];
+    body = `<div class="f">Measure the<span class="seg">${SIZE_NAMES.map((n, i) => `<button data-act="scale-dim" data-v="${i}" class="${d === i ? 'on' : ''}">${n[0].toUpperCase() + n.slice(1)}</button>`).join('')}</span></div>
+      <div class="f">${name[0].toUpperCase() + name.slice(1)} now<div class="row mono">${fmtLen(size[d], u)}</div></div>
+      <div class="f">Make the ${name}<div class="row">${numField('scale-length', s.length ? round(toUnits(s.length, u)) : '', u)}</div></div>`;
+  }
   else body = `<div class="f">Multiply every size by<div class="row">${numField('scale-factor', s.factor, '×')}</div></div>`;
   const ok = Number.isFinite(f) && f > 0;
   const preview = editing
     ? ''
     : `<div class="note">${ok ? `New size: ${fmtLen(size[0] * f, u)} long, ${fmtLen(size[1] * f, u)} wide, ${fmtLen(size[2] * f, u)} high · ×${round(f, 4)}` : 'Enter the numbers above.'}</div>`;
   return `${head(editing ? 'Change scale step' : 'Scale', 'Make the body the right size for your scale. Measure › distance can also set the scale from a known length.')}
-    ${editing ? '' : `<span class="seg"><button data-act="scale-mode" data-v="from" class="${s.mode === 'from' ? 'on' : ''}">From a scale</button><button data-act="scale-mode" data-v="length" class="${s.mode === 'length' ? 'on' : ''}">To a length</button><button data-act="scale-mode" data-v="factor" class="${s.mode === 'factor' ? 'on' : ''}">By a factor</button></span>`}
+    ${editing ? '' : `<span class="seg"><button data-act="scale-mode" data-v="from" class="${s.mode === 'from' ? 'on' : ''}">From a scale</button><button data-act="scale-mode" data-v="length" class="${s.mode === 'length' ? 'on' : ''}" title="To a length, width or height">To a size</button><button data-act="scale-mode" data-v="factor" class="${s.mode === 'factor' ? 'on' : ''}">By a factor</button></span>`}
     ${body}${preview}
     <div class="row"><button class="btn primary sm" data-act="scale-apply"${ok ? '' : ' disabled'}>${editing ? 'Update step' : 'Scale'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>`;
 }
@@ -640,17 +646,49 @@ const KEEP_NAMES = {
   z: { below: 'Below', above: 'Above' },
 };
 
+// A tilted cut slopes along one of the other two directions, about the
+// middle of the model in that direction.
+const SLICE_LEAN = { x: 'z', y: 'z', z: 'x' };
+const LEAN_NAMES = { x: 'length', y: 'width', z: 'height' };
+const LEAN_END = { x: 'back', y: 'right side', z: 'top' };
+const AXIS_ENDS = { x: ['front', 'back'], y: ['left side', 'right side'] };
+function tiltHint({ axis, tilt, lean }) {
+  if (axis === 'z') return `${tilt > 0 ? 'Higher' : 'Lower'} toward the ${LEAN_END[lean]}.`;
+  return `Leans toward the ${AXIS_ENDS[axis][tilt > 0 ? 1 : 0]} at the ${LEAN_END[lean]}.`;
+}
+function slicePivot(lean) {
+  const [lo, hi] = axisRange(lean);
+  return round((lo + hi) / 2, 4);
+}
+function sliceParams() {
+  const { axis, at, keep, cap, gap, tilt, lean, pivot } = ui.slice;
+  return {
+    axis,
+    at: round(at, 4),
+    keep,
+    ...(cap ? { cap: true } : {}),
+    ...(keep === 'both' ? { gap: round(gap ?? 10, 3) } : {}),
+    ...(tilt ? { tilt: round(tilt, 2), lean, pivot: pivot ?? slicePivot(lean) } : {}),
+  };
+}
+
 function panelSlice(editing) {
   const s = ui.slice,
     u = project.units;
-  if (editing && s.editingId !== editing.id) Object.assign(s, editing.params, { editingId: editing.id });
+  if (editing && s.editingId !== editing.id) Object.assign(s, { tilt: 0, cap: false, gap: 10, pivot: null }, editing.params, { editingId: editing.id });
   if (!editing) s.editingId = null;
   const [lo, hi] = axisRange(s.axis);
   if (s.at == null || (!editing && (s.at < lo || s.at > hi))) s.at = s.axis === 'z' ? lo + (hi - lo) * 0.08 : (lo + hi) / 2;
   s.gap ??= 10;
+  s.tilt ??= 0;
+  if (!s.lean || s.lean === s.axis) s.lean = SLICE_LEAN[s.axis];
+  if (s.pivot == null) s.pivot = slicePivot(s.lean);
+  const leans = ['x', 'y', 'z'].filter((a) => a !== s.axis);
   return `${head(editing ? 'Change slice step' : 'Slice', 'Cut the model with a flat plane and keep one side, or both to print in two. The cut stays open, like the underside of a body shell, unless you close it.')}
     <div class="f">Direction<span class="seg">${['x', 'y', 'z'].map((a) => `<button data-act="slice-axis" data-v="${a}" class="${s.axis === a ? 'on' : ''}">${AXIS_NAMES[a]}</button>`).join('')}</span></div>
-    <div class="f">Cut at<div class="row"><input type="range" data-field="slice-range" min="${lo}" max="${hi}" step="${(hi - lo) / 500}" value="${s.at}">${numField('slice-at', round(toUnits(s.at, u)), u)}</div></div>
+    <div class="f">Cut at<div class="row"><input type="range" data-field="slice-range" min="${lo}" max="${hi}" step="${(hi - lo) / 500}" value="${s.at}">${numField('slice-at', round(toUnits(s.at, u)), u)}</div>${s.tilt ? `<div class="muted" style="font-weight:400;font-size:12px">Measured at the middle of the ${LEAN_NAMES[s.lean]}.</div>` : ''}</div>
+    <div class="f">Tilt<div class="row"><button class="btn sm icon" data-act="slice-tilt" data-v="-1" title="Tilt 1° one way">−</button>${numField('slice-tilt', s.tilt, '°')}<button class="btn sm icon" data-act="slice-tilt" data-v="1" title="Tilt 1° the other way">+</button>${s.tilt ? '<button class="btn sm ghost" data-act="slice-tilt" data-v="0">Level</button>' : ''}</div></div>
+    ${s.tilt ? `<div class="f">Slopes along<span class="seg">${leans.map((a) => `<button data-act="slice-lean" data-v="${a}" class="${s.lean === a ? 'on' : ''}">${LEAN_NAMES[a][0].toUpperCase() + LEAN_NAMES[a].slice(1)}</button>`).join('')}</span><div class="muted" style="font-weight:400;font-size:12px">${tiltHint(s)} Check the red plane in the view.</div></div>` : ''}
     <div class="f">Keep<span class="seg">${['below', 'above', 'both'].map((k) => `<button data-act="slice-keep" data-v="${k}" class="${s.keep === k ? 'on' : ''}">${k === 'both' ? 'Both' : KEEP_NAMES[s.axis][k]}</button>`).join('')}</span></div>
     ${s.keep === 'both' ? `<div class="f">Move the two apart by<div class="row">${numField('slice-gap', round(toUnits(s.gap, u), 2), u)}</div></div>` : ''}
     <label class="chk"><input type="checkbox" data-field="slice-cap" ${s.cap ? 'checked' : ''}>Close the cut flat (a ring on a hollow shell)</label>
@@ -2210,7 +2248,7 @@ function stepDetail(step, info) {
   if (step.type === 'orient') return `front ${p.front}, roof ${p.up}${p.turn ? `, turned ${p.turn}°` : ''}`;
   if (step.type === 'scale') return `× ${round(p.factor, 4)}`;
   if (step.type === 'slice')
-    return `${AXIS_NAMES[p.axis].toLowerCase()} at ${fmtLen(p.at, u)} · keep ${p.keep === 'both' ? 'both' : KEEP_NAMES[p.axis][p.keep].toLowerCase()}${p.cap ? ' · closed' : ''}`;
+    return `${AXIS_NAMES[p.axis].toLowerCase()} at ${fmtLen(p.at, u)}${p.tilt ? `, tilted ${p.tilt}° along the ${LEAN_NAMES[p.lean]}` : ''} · keep ${p.keep === 'both' ? 'both' : KEEP_NAMES[p.axis][p.keep].toLowerCase()}${p.cap ? ' · closed' : ''}`;
   if (step.type === 'delete')
     return p.label === 'parts' ? `${p.parts} part${p.parts === 1 ? '' : 's'} removed` : `${runCount(p.faces).toLocaleString()} triangles${p.patch === 'smooth' ? ' · patched' : ''}`;
   if (step.type === 'repair') {
@@ -2301,7 +2339,10 @@ function renderStatus() {
 function applyGuide() {
   const editing = project?.steps.find((s) => s.id === ui.editStep);
   const slicing = result && ((ui.panel === 'slice' && !ui.editStep) || editing?.type === 'slice');
-  if (slicing && ui.slice.at != null) viewport.planeGuide(ui.slice.axis, ui.slice.at);
+  if (slicing && ui.slice.at != null) {
+    const s = ui.slice;
+    viewport.planeGuide(s.axis, s.at, undefined, s.tilt && s.lean !== s.axis ? { tilt: s.tilt, lean: s.lean, pivot: s.pivot ?? slicePivot(s.lean) } : null);
+  }
   else viewport.planeGuide(null);
 }
 
@@ -2678,7 +2719,12 @@ const actions = {
   },
   'scale-mode'(v) {
     ui.scale.mode = v;
-    if (v === 'length' && !ui.scale.length) ui.scale.length = result.stats.bounds.size[0];
+    if (v === 'length' && !ui.scale.length) ui.scale.length = result.stats.bounds.size[ui.scale.dim ?? 0];
+    renderPanel();
+  },
+  'scale-dim'(v) {
+    ui.scale.dim = Number(v);
+    ui.scale.length = result.stats.bounds.size[ui.scale.dim];
     renderPanel();
   },
   'scale-to'(v) {
@@ -2694,6 +2740,20 @@ const actions = {
   'slice-axis'(v) {
     ui.slice.axis = v;
     ui.slice.at = null;
+    ui.slice.lean = SLICE_LEAN[v];
+    ui.slice.pivot = null;
+    renderPanel();
+    applyGuide();
+  },
+  'slice-tilt'(v) {
+    const d = Number(v);
+    ui.slice.tilt = d === 0 ? 0 : Math.max(-80, Math.min(80, round((ui.slice.tilt ?? 0) + d, 2)));
+    renderPanel();
+    applyGuide();
+  },
+  'slice-lean'(v) {
+    ui.slice.lean = v;
+    ui.slice.pivot = null;
     renderPanel();
     applyGuide();
   },
@@ -2702,8 +2762,7 @@ const actions = {
     renderPanel();
   },
   'slice-apply'() {
-    const { axis, at, keep, cap, gap } = ui.slice;
-    addOrUpdateStep('slice', { axis, at: round(at, 4), keep, ...(cap ? { cap: true } : {}), ...(keep === 'both' ? { gap: round(gap ?? 10, 3) } : {}) });
+    addOrUpdateStep('slice', sliceParams());
   },
   'fix-apply'() {
     addOrUpdateStep('repair', { ...fixOptions() });
@@ -3384,6 +3443,10 @@ document.addEventListener('change', (e) => {
   } else if (f === 'slice-gap') {
     if (v >= 0) ui.slice.gap = fromUnits(v, u);
     return;
+  } else if (f === 'slice-tilt') {
+    if (Number.isFinite(v) && Math.abs(v) <= 80) ui.slice.tilt = v;
+    renderPanel();
+    return applyGuide();
   } else if (f === 'smooth-edges') {
     smoothOptions().keepEdges = e.target.checked;
     return;

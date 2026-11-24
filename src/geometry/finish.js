@@ -85,14 +85,29 @@ export function applySmooth(mesh, { strokes = [], faces = null, strength = 3, ke
 
 // Close the openings that lie in a plane (axis = at): outlines inside
 // outlines become holes, so a shell's cut gets a ring, a solid's a full cap.
-export function capPlane(mesh, axis, at, tol = 1e-4) {
+// tilted (from slicePlane): the plane is turned, and the outlines are laid
+// flat along it.
+export function capPlane(mesh, axis, at, tol = 1e-4, tilted = null) {
   const k = 'xyz'.indexOf(axis);
   const P = mesh.positions;
   const { twins } = pairEdges(mesh.indices, P.length / 3, P);
-  const loops = boundaryLoops(mesh.indices, twins).filter((l) => l.every((v) => Math.abs(P[v * 3 + k] - at) < tol * Math.max(1, Math.abs(at)) + 1e-4));
+  const off = (v) => (tilted ? tilted.dist(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]) : P[v * 3 + k] - at);
+  const loops = boundaryLoops(mesh.indices, twins).filter((l) => l.every((v) => Math.abs(off(v)) < tol * Math.max(1, Math.abs(at)) + 1e-4));
   if (!loops.length) return { mesh, capped: 0 };
-  const [i, j] = [0, 1, 2].filter((c) => c !== k);
-  const flat = loops.map((l) => l.map((v) => new Vector2(P[v * 3 + i], P[v * 3 + j])));
+  let flatten;
+  if (tilted) {
+    // Along the slope (in the plane) and along the line it turns about.
+    const n = tilted.normal,
+      j = 3 - tilted.k - tilted.i;
+    const u = [0, 0, 0];
+    u[tilted.i] = n[tilted.k];
+    u[tilted.k] = -n[tilted.i];
+    flatten = (v) => new Vector2(u[0] * P[v * 3] + u[1] * P[v * 3 + 1] + u[2] * P[v * 3 + 2], P[v * 3 + j]);
+  } else {
+    const [i, j] = [0, 1, 2].filter((c) => c !== k);
+    flatten = (v) => new Vector2(P[v * 3 + i], P[v * 3 + j]);
+  }
+  const flat = loops.map((l) => l.map(flatten));
   const area = (pts) => pts.reduce((s, p, n) => s + p.x * pts[(n + 1) % pts.length].y - pts[(n + 1) % pts.length].x * p.y, 0) / 2;
   const inside = (p, pts) => {
     let odd = false;

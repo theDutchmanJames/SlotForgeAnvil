@@ -590,7 +590,8 @@ export class Viewport {
   }
 
   // A see-through plane, for the slice tool and the section.
-  planeGuide(axis, at, color = 0xe5484d) {
+  // tilt: { tilt (degrees), lean, pivot } turns it as the slice step does.
+  planeGuide(axis, at, color = 0xe5484d, tilt = null) {
     if (this.guide) {
       this.scene.remove(this.guide);
       this.guide.geometry.dispose();
@@ -599,6 +600,7 @@ export class Viewport {
     if (axis == null || !this.box) return this.render();
     const size = this.box.getSize(new THREE.Vector3()).multiplyScalar(1.15);
     const center = this.box.getCenter(new THREE.Vector3());
+    if (tilt?.tilt) return this.tiltedGuide(axis, at, color, tilt, size, center);
     const dims = { x: [size.y, size.z], y: [size.x, size.z], z: [size.x, size.y] }[axis];
     const geo = new THREE.PlaneGeometry(dims[0], dims[1]);
     const mesh = new THREE.Mesh(
@@ -610,6 +612,33 @@ export class Viewport {
     if (axis === 'x') mesh.rotation.set(Math.PI / 2, Math.PI / 2, 0);
     if (axis === 'y') mesh.rotation.set(Math.PI / 2, 0, 0);
     mesh.position.copy(center).setComponent('xyz'.indexOf(axis), at);
+    mesh.renderOrder = 3;
+    this.guide = mesh;
+    this.scene.add(mesh);
+    this.render();
+  }
+
+  tiltedGuide(axis, at, color, { tilt, lean, pivot }, size, center) {
+    const k = 'xyz'.indexOf(axis),
+      i = 'xyz'.indexOf(lean),
+      j = 3 - k - i;
+    const a = (tilt * Math.PI) / 180;
+    // Along the slope, along the line it turns about, and the facing.
+    const ex = new THREE.Vector3().setComponent(i, Math.cos(a)).setComponent(k, Math.sin(a));
+    const ey = new THREE.Vector3().setComponent(j, 1);
+    const ez = new THREE.Vector3().crossVectors(ex, ey);
+    const along = size.getComponent(i) / Math.max(0.2, Math.cos(a));
+    const geo = new THREE.PlaneGeometry(along, size.getComponent(j));
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color })));
+    mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ex, ey, ez));
+    const c = center.clone().setComponent(k, at).setComponent(i, pivot);
+    // Centre it over the model along the slope.
+    const shift = center.getComponent(i) - pivot;
+    mesh.position.copy(c).addScaledVector(ex, shift / Math.cos(a));
     mesh.renderOrder = 3;
     this.guide = mesh;
     this.scene.add(mesh);

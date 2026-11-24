@@ -73,6 +73,32 @@ test('slice: keep both sides, capped: a shell gets a ring, both halves are close
   assert.ok(Math.abs(volume(half) - 40 * 40 * 10) < 1e-2, `${volume(half)}`);
 });
 
+test('slice at an angle: the cut slopes as asked and caps closed', () => {
+  const solid = box(40, 40, 20, 6);
+  const t = Math.tan((20 * Math.PI) / 180);
+  const params = { axis: 'z', at: 10, tilt: 20, lean: 'x', pivot: 20 };
+  const low = applySlice(solid, { ...params, keep: 'below', cap: true });
+  const P = low.positions;
+  for (let i = 0; i < P.length; i += 3) assert.ok(P[i + 2] <= 10 + t * (P[i] - 20) + 1e-4, 'nothing above the sloped cut');
+  // Higher at the back (high X) than at the front.
+  const topAt = (x0) => Math.max(...Array.from({ length: P.length / 3 }, (_, v) => v).filter((v) => Math.abs(P[v * 3] - x0) < 1e-4).map((v) => P[v * 3 + 2]));
+  assert.ok(Math.abs(topAt(40) - (10 + 20 * t)) < 1e-3 && Math.abs(topAt(0) - (10 - 20 * t)) < 1e-3);
+  const st = meshStats(low);
+  assert.equal(st.openEdges, 0);
+  assert.equal(st.faultyEdges, 0);
+  // The plane passes through the middle, so the box is still halved.
+  assert.ok(Math.abs(volume(low) - 40 * 40 * 10) < 1e-1, `${volume(low)}`);
+  const high = applySlice(solid, { ...params, keep: 'above', cap: true });
+  assert.ok(Math.abs(volume(high) - 40 * 40 * 10) < 1e-1, `${volume(high)}`);
+  // A shell cut at an angle across, both kept, gets two rings.
+  const both = applySlice(shell(), { axis: 'x', at: 50, tilt: -30, lean: 'z', pivot: 15, keep: 'both', cap: true });
+  assert.equal(both.info.capped, 2);
+  assert.equal(meshStats(both).faultyEdges, 0);
+  // No tilt is the plain cut; a slope along the cut's own direction is refused.
+  assert.deepEqual(applySlice(solid, { axis: 'z', at: 10, keep: 'below', tilt: 0 }).positions, applySlice(solid, { axis: 'z', at: 10, keep: 'below' }).positions);
+  assert.throws(() => applySlice(solid, { axis: 'z', at: 10, keep: 'below', tilt: 10, lean: 'z' }));
+});
+
 test('an added part is placed, mirrored if asked, and joined to the body', () => {
   const part = box(4, 2, 2, 1);
   const pieces = partPieces(part, { x: 50, y: 10, z: 30, scale: 2, rz: 90, pair: true });
