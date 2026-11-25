@@ -68,7 +68,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 
 ### Build the shell
 
-- **Floor line:** cut the underside open at a height, or squish the lower body up onto the line so sills and valances keep their shape.
+- **Floor line:** cut the underside open at a height, or squish the lower body up onto the line so sills and valances keep their shape. On a body that is already a hollow shell, the wall is closed along the cut, so it prints solid between its skins; the same goes for Slice and Wheel arches.
 - **Hollow:** an even wall built inwards from the outside, which does not move. An already-hollow model gets its old inner wall replaced. **Lighten the top** thins the wall from the sills up to the roof.
 - **Paint thickness:** paint thinner or thicker spots on the wall.
 - **Hammer:** hammer panels out or in like a real body panel, hold areas with a dolly, and planish out the marks. The wall is rebuilt evenly behind it.

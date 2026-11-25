@@ -234,12 +234,14 @@ export function slicePlane({ axis, at, tilt = 0, lean, pivot = 0 }) {
 // one side, or both (moved `gap` apart, to print in two). The cut stays open,
 // which is what a body shell needs, unless cap is asked: then it is closed
 // flat (a ring on a shell).
-export function applySlice(mesh, { axis, at, keep, cap = false, gap = 10, tilt = 0, lean, pivot }) {
+// walls (with cap): close only cuts through a wall, leaving the inside of a
+// body open (for the floor line).
+export function applySlice(mesh, { axis, at, keep, cap = false, walls = false, gap = 10, tilt = 0, lean, pivot }) {
   const plane = { axis, at, tilt, lean, pivot };
   if (keep === 'both') {
     const k = 'xyz'.indexOf(axis);
-    const lo = applySlice(mesh, { ...plane, keep: 'below', cap });
-    const hi = applySlice(mesh, { ...plane, keep: 'above', cap });
+    const lo = applySlice(mesh, { ...plane, keep: 'below', cap, walls });
+    const hi = applySlice(mesh, { ...plane, keep: 'above', cap, walls });
     const shifted = Float32Array.from(hi.positions, (v, n) => (n % 3 === k ? v + gap : v));
     const off = lo.positions.length / 3;
     const idx = new Uint32Array(lo.indices.length + hi.indices.length);
@@ -253,7 +255,7 @@ export function applySlice(mesh, { axis, at, keep, cap = false, gap = 10, tilt =
   const pl = slicePlane(plane);
   const out = sliceOne(mesh, pl, at, keep);
   if (!cap) return out;
-  const c = capPlane(out, axis, at, 1e-4, pl.tilted ? pl : null);
+  const c = capPlane(out, axis, at, 1e-4, pl.tilted ? pl : null, walls);
   return { positions: c.mesh.positions, indices: c.mesh.indices, info: { ...out.info, capped: c.capped } };
 }
 

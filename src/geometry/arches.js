@@ -1,7 +1,10 @@
 // Making a body fit its chassis: stretch or shorten it between the wheel
 // arches, widen it, cut the arches round the tyres, and flare them out.
 // Car frame: front at low X, Z up, centre line Y = 0.
+import { Vector2 } from 'three';
 import { bounds } from './bounds.js';
+import { capLoops } from './finish.js';
+import { boundaryLoops, pairEdges } from './topology.js';
 
 // ------------------------------------------------------------ stretch
 
@@ -51,19 +54,44 @@ function blend(s) {
 // ------------------------------------------------------------ cutting the arches
 
 // Remove everything inside a cylinder running across the car (x, z centre,
-// radius r), keeping the rest. Cut edges stay open: run before Hollow, which
-// closes them with the wall edge.
-export function applyArchCut(mesh, { cuts }) {
+// radius r), keeping the rest. Where the cut goes through a shell's wall, the
+// wall is closed along the cut so it stays solid between its skins; a solid
+// body's cut stays open for Hollow, which closes it with the new wall.
+export function applyArchCut(mesh, { cuts, closeWalls = true }) {
   let m = mesh;
-  let removed = 0;
+  let removed = 0,
+    walls = 0;
   for (const c of cuts ?? []) {
     if (!(c.r > 0) || !Number.isFinite(c.x) || !Number.isFinite(c.z)) throw Error('An arch cut is damaged. Remove the step and cut again.');
     const inside = (x, z) => c.r * c.r - ((x - c.x) ** 2 + (z - c.z) ** 2); // > 0 inside
     const out = clip(m, (p) => inside(p[0], p[2])); // keep where inside <= 0: outside the circle
     removed += out.removed;
     m = out;
+    if (closeWalls && out.removed) {
+      const closed = closeCylinderCut(m, c);
+      walls += closed.capped;
+      m = closed.mesh;
+    }
   }
-  return { positions: m.positions, indices: m.indices, info: { removed } };
+  return { positions: m.positions, indices: m.indices, info: { removed, walls } };
+}
+
+// The openings a cut left on the arch cylinder, closed where they are a wall.
+// The cylinder is unrolled flat (round the axle, and across the car); the
+// seam is straight down from the axle, where a body has no wall.
+function closeCylinderCut(mesh, c) {
+  const P = mesh.positions;
+  const { twins } = pairEdges(mesh.indices, P.length / 3, P);
+  const tol = c.r * 1e-4 + 1e-4;
+  const onCut = (v) => Math.abs(Math.hypot(P[v * 3] - c.x, P[v * 3 + 2] - c.z) - c.r) < tol;
+  const loops = boundaryLoops(mesh.indices, twins).filter((l) => l.every(onCut));
+  if (!loops.length) return { mesh, capped: 0 };
+  const flatten = (v) => {
+    let a = Math.atan2(P[v * 3 + 2] - c.z, P[v * 3] - c.x);
+    if (a < -Math.PI / 2) a += 2 * Math.PI;
+    return new Vector2(a * c.r, P[v * 3 + 1]);
+  };
+  return capLoops(mesh, loops, flatten, true);
 }
 
 // Keep the part of the mesh where f(p) <= 0. Triangles crossing the surface

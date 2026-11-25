@@ -87,7 +87,9 @@ export function applySmooth(mesh, { strokes = [], faces = null, strength = 3, ke
 // outlines become holes, so a shell's cut gets a ring, a solid's a full cap.
 // tilted (from slicePlane): the plane is turned, and the outlines are laid
 // flat along it.
-export function capPlane(mesh, axis, at, tol = 1e-4, tilted = null) {
+// walls: close only the cut through a wall (a ring, or a thin strip where the
+// outer and inner skin meet at its ends), never the whole inside of a body.
+export function capPlane(mesh, axis, at, tol = 1e-4, tilted = null, walls = false) {
   const k = 'xyz'.indexOf(axis);
   const P = mesh.positions;
   const { twins } = pairEdges(mesh.indices, P.length / 3, P);
@@ -107,14 +109,30 @@ export function capPlane(mesh, axis, at, tol = 1e-4, tilted = null) {
     const [i, j] = [0, 1, 2].filter((c) => c !== k);
     flatten = (v) => new Vector2(P[v * 3 + i], P[v * 3 + j]);
   }
-  return capLoops(mesh, loops, flatten);
+  return capLoops(mesh, loops, flatten, walls);
 }
 
+// Wider than this share of the model's diagonal, an outline is not a wall.
+export const WALL_WIDTH = 0.05;
+
 // Close the given openings (all in one plane) flat. flatten(v) lays a corner
-// out in that plane, as a Vector2.
-export function capLoops(mesh, loops, flatten) {
+// out in that plane, as a Vector2. walls: see capPlane.
+export function capLoops(mesh, loops, flatten, walls = false) {
   const flat = loops.map((l) => l.map(flatten));
   const area = (pts) => pts.reduce((s, p, n) => s + p.x * pts[(n + 1) % pts.length].y - pts[(n + 1) % pts.length].x * p.y, 0) / 2;
+  const perimeter = (pts) => pts.reduce((s, p, n) => s + p.distanceTo(pts[(n + 1) % pts.length]), 0);
+  let maxWidth = Infinity;
+  if (walls) {
+    const P = mesh.positions;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < P.length; i++) {
+      lo[i % 3] = Math.min(lo[i % 3], P[i]);
+      hi[i % 3] = Math.max(hi[i % 3], P[i]);
+    }
+    maxWidth = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * WALL_WIDTH;
+  }
+  // A strip's width: twice its area over its length round.
+  const thin = (pts) => (2 * Math.abs(area(pts))) / Math.max(perimeter(pts), 1e-12) < maxWidth;
   const inside = (p, pts) => {
     let odd = false;
     for (let a = 0, b = pts.length - 1; a < pts.length; b = a++)
@@ -124,9 +142,12 @@ export function capLoops(mesh, loops, flatten) {
   // How deep each outline sits inside the others: even = an outer edge, odd = a hole.
   const depth = flat.map((pts, n) => flat.filter((o, m) => m !== n && Math.abs(area(o)) > Math.abs(area(pts)) && inside(pts[0], o)).length);
   const faces = [];
+  let capped = 0;
   flat.forEach((outer, n) => {
     if (depth[n] % 2) return;
     const holes = flat.map((h, m) => m).filter((m) => depth[m] === depth[n] + 1 && inside(flat[m][0], outer));
+    if (walls && !holes.length && !thin(outer)) return;
+    capped++;
     const contour = outer, holePts = holes.map((m) => flat[m]);
     const ids = [...loops[n], ...holes.flatMap((m) => loops[m])];
     const tris = ShapeUtils.triangulateShape(contour, holePts);
@@ -142,7 +163,7 @@ export function capLoops(mesh, loops, flatten) {
   const idx = new Uint32Array(mesh.indices.length + faces.length);
   idx.set(mesh.indices);
   idx.set(faces, mesh.indices.length);
-  return { mesh: { positions: mesh.positions, indices: idx }, capped: loops.filter((_, n) => depth[n] % 2 === 0).length };
+  return { mesh: { positions: mesh.positions, indices: idx }, capped };
 }
 
 // ------------------------------------------------------------ add a part

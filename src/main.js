@@ -89,7 +89,7 @@ const ui = {
   perspective: false,
   lastView: '3d',
   scale: { mode: 'from', from: null, to: 24, factor: 1, length: null, dim: 0 },
-  slice: { axis: 'z', at: null, keep: 'above', tilt: 0, lean: 'x' },
+  slice: { axis: 'z', at: null, keep: 'above', tilt: 0, lean: 'x', cap: true },
   cutoff: { cuts: [], active: 0, mirror: false, open: false, mode: 'translate', editingId: null },
   measure: [],
   saved: 'none',
@@ -767,14 +767,14 @@ function panelSlice(editing) {
   if (!s.lean || s.lean === s.axis) s.lean = SLICE_LEAN[s.axis];
   if (s.pivot == null) s.pivot = slicePivot(s.lean);
   const leans = ['x', 'y', 'z'].filter((a) => a !== s.axis);
-  return `${head(editing ? 'Change slice step' : 'Slice', 'Cut the model with a flat plane and keep one side, or both to print in two. The cut stays open, like the underside of a body shell, unless you close it.')}
+  return `${head(editing ? 'Change slice step' : 'Slice', 'Cut the model with a flat plane and keep one side, or both to print in two. The cut is closed, so a hollow shell\'s wall stays solid between its skins.')}
     <div class="f">Direction<span class="seg">${['x', 'y', 'z'].map((a) => `<button data-act="slice-axis" data-v="${a}" class="${s.axis === a ? 'on' : ''}">${AXIS_NAMES[a]}</button>`).join('')}</span></div>
     <div class="f">Cut at<div class="row"><input type="range" data-field="slice-range" min="${lo}" max="${hi}" step="${(hi - lo) / 500}" value="${s.at}">${numField('slice-at', round(toUnits(s.at, u)), u)}</div>${s.tilt ? `<div class="muted" style="font-weight:400;font-size:12px">Measured at the middle of the ${LEAN_NAMES[s.lean]}.</div>` : ''}</div>
     <div class="f">Tilt<div class="row"><button class="btn sm icon" data-act="slice-tilt" data-v="-1" title="Tilt 1° one way">−</button>${numField('slice-tilt', s.tilt, '°')}<button class="btn sm icon" data-act="slice-tilt" data-v="1" title="Tilt 1° the other way">+</button>${s.tilt ? '<button class="btn sm ghost" data-act="slice-tilt" data-v="0">Level</button>' : ''}</div></div>
     ${s.tilt ? `<div class="f">Slopes along<span class="seg">${leans.map((a) => `<button data-act="slice-lean" data-v="${a}" class="${s.lean === a ? 'on' : ''}">${LEAN_NAMES[a][0].toUpperCase() + LEAN_NAMES[a].slice(1)}</button>`).join('')}</span><div class="muted" style="font-weight:400;font-size:12px">${tiltHint(s)} Check the red plane in the view.</div></div>` : ''}
     <div class="f">Keep<span class="seg">${['below', 'above', 'both'].map((k) => `<button data-act="slice-keep" data-v="${k}" class="${s.keep === k ? 'on' : ''}">${k === 'both' ? 'Both' : KEEP_NAMES[s.axis][k]}</button>`).join('')}</span></div>
     ${s.keep === 'both' ? `<div class="f">Move the two apart by<div class="row">${numField('slice-gap', round(toUnits(s.gap, u), 2), u)}</div></div>` : ''}
-    <label class="chk"><input type="checkbox" data-field="slice-cap" ${s.cap ? 'checked' : ''}>Close the cut flat (a ring on a hollow shell)</label>
+    <label class="chk"><input type="checkbox" data-field="slice-cap" ${s.cap ? 'checked' : ''}>Close the cut (along the wall on a hollow shell)</label>
     <div class="row"><button class="btn primary sm" data-act="slice-apply">${editing ? 'Update step' : 'Cut'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>`;
 }
 
@@ -2385,14 +2385,14 @@ function stepDetail(step, info) {
     ].filter(([n]) => n);
     return bits.length ? bits.map(([n, t]) => `${n.toLocaleString()} ${t}`).join(', ') : 'nothing needed fixing';
   }
-  if (step.type === 'floor') return `${p.mode} at ${fmtLen(p.at, u)}${p.mode === 'squish' ? `, ${fmtLen(p.blend, u)} zone` : ''}${info?.pressed ? ` · ${info.pressed}% pressed` : ''}`;
+  if (step.type === 'floor') return `${p.mode} at ${fmtLen(p.at, u)}${p.mode === 'squish' ? `, ${fmtLen(p.blend, u)} zone` : ''}${info?.pressed ? ` · ${info.pressed}% pressed` : ''}${info?.walls ? ' · wall closed' : ''}`;
   if (step.type === 'hollow')
     return `wall ${fmtLen(p.wall, u)}${Number.isFinite(p.top) ? `, roof ${fmtLen(p.top, u)}` : ''}${p.strokes?.length ? `, ${p.strokes.length} painted` : ''}${info?.oldWall ? ` · old wall was ${fmtLen(info.oldWall, u)}` : ''}${info?.solid ? ' · thin parts kept solid' : ''}`;
   if (step.type === 'hammer')
     return `${p.blows.length} blow${p.blows.length === 1 ? '' : 's'}${p.dollies?.length ? `, ${p.dollies.length} dolly spots` : ''}${info?.added ? ` · ${info.added.toLocaleString()} edges split` : ''}`;
   if (step.type === 'stretch')
     return p.axis === 'x' ? `${p.amount >= 0 ? 'longer' : 'shorter'} by ${fmtLen(Math.abs(p.amount), u)} between the arches` : `${p.amount >= 0 ? 'wider' : 'narrower'} by ${fmtLen(Math.abs(p.amount), u)}`;
-  if (step.type === 'arches') return `${(p.which ?? []).join(' and ')} cut round the tyres`;
+  if (step.type === 'arches') return `${(p.which ?? []).join(' and ')} cut round the tyres${info?.walls ? ' · wall closed' : ''}`;
   if (step.type === 'smooth')
     return `${p.faces ? `${runCount(p.faces).toLocaleString()} selected triangles` : `${p.strokes.length} brush spot${p.strokes.length === 1 ? '' : 's'}`} · strength ${p.strength}${p.protect ? ' · inside only' : ''}`;
   if (step.type === 'addpart') return `${esc(p.name)} · ${p.join ? 'joined' : 'its own print'}${p.place?.pair ? ' · a pair' : ''}`;

@@ -11,7 +11,7 @@ import { next, pairEdges, partsOf, splitTouching } from './topology.js';
 
 // at: height of the floor line. cut: remove what is below. squish: press the
 // lower body up onto the line over a blend zone above it, then open it there.
-export function applyFloor(mesh, { mode = 'cut', at, blend = 6 }) {
+export function applyFloor(mesh, { mode = 'cut', at, blend = 6, closeWalls = true }) {
   if (!Number.isFinite(at)) throw Error('Set the height of the floor line.');
   const b = bounds(mesh.positions);
   if (at <= b.min[2] + 1e-6 && mode === 'cut') throw Error('The floor line is below the car: raise it to open the underside.');
@@ -35,11 +35,13 @@ export function applyFloor(mesh, { mode = 'cut', at, blend = 6 }) {
       info.pressed = Math.round((1 - 1 / ratio) * 100);
     }
     // Open the underside just above the pressed-flat bottom.
-    const cut = applySlice(m, { axis: 'z', at: at + Math.min(0.05, blend * 0.01), keep: 'above' });
-    return { positions: cut.positions, indices: cut.indices, info };
+    const cut = applySlice(m, { axis: 'z', at: at + Math.min(0.05, blend * 0.01), keep: 'above', cap: closeWalls, walls: true });
+    return { positions: cut.positions, indices: cut.indices, info: { ...info, walls: cut.info.capped ?? 0 } };
   }
-  const cut = applySlice(m, { axis: 'z', at, keep: 'above' });
-  return { positions: cut.positions, indices: cut.indices, info };
+  // A shell's wall is closed along the cut, so it stays solid between its
+  // skins; the inside of the body stays open underneath.
+  const cut = applySlice(m, { axis: 'z', at, keep: 'above', cap: closeWalls, walls: true });
+  return { positions: cut.positions, indices: cut.indices, info: { ...info, walls: cut.info.capped ?? 0 } };
 }
 
 // ------------------------------------------------------------ which skin is which
