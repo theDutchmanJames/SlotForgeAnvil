@@ -97,6 +97,8 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 
 ### Shape and finish
 
+- **Body shaping:** taper or widen a stretch of the body (a different change at its front and rear), and raise or lower it above a height you choose, with smooth blends at both ends. Preview it first, then apply it as a step you can change later; it goes before Hollow, so the walls are made on the shaped body.
+- **Feature layout:** move posts, lights, windows, text or an added part by an exact amount, or repeat them in a row of up to 20 copies. With Mirror on, a light or text and its other side move together.
 - **Panel lines:** shallow panel lines vanish when printed small. Anvil finds the narrow grooves on the outside (shown in red first) and makes them as deep as you set, or only those in your selection.
 - **Text:** race numbers, names and letters in the fonts on your computer, raised out of the body or cut into it, following its curve. Click where it goes; with Mirror on, the other side gets it too, reading the right way round. The letters are kept in the project, so it builds the same anywhere.
 - **Glue tabs:** when a body is cut into pieces (Slice keeping both, or Split off), add strips on the inside of the wall that stick out past the cut, so the other piece slides over them, lines up and has more to glue to. They show in amber before the cut; spread them evenly, add or remove them, slide each along the cut, and set their width, reach, thickness and the room left for the other wall.
@@ -111,6 +113,8 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 - **Look:** colour the body by wall thickness, cut a section through it, show the chassis, or compare with the original model.
 - **Final check:** one list of everything that matters before printing (closed solid, loose pieces, wall thickness, chassis fit, ground clearance, posts, windows, weight and centre of weight), each with a button to the tool that fixes it.
 - **Export STL:** the body, and the buck and separate parts as their own files.
+- **Build sheet:** from Final check, a page to keep with the print: sizes, material, estimated weight, chassis, and every step with its settings, notes and warnings.
+- **Step names and notes:** give any step your own name and notes, and search the step list.
 - **Projects:** your last body is kept on this computer and opens again next time. **Save project** writes an `.anvil` file with the original model and every step.
 
 ### Make Anvil look the way you want
