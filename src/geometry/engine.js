@@ -27,6 +27,7 @@ import { applyPanelLines, applyText } from './detail.js';
 import { applyInterior } from './interior.js';
 import { applyLights } from './lights.js';
 import { applySymmetrize } from './symmetry.js';
+import { applyBodyShape } from './bodyshape.js';
 
 export const AXES = ['+x', '-x', '+y', '-y', '+z', '-z'];
 const unitOf = (axis) => {
@@ -404,6 +405,7 @@ export function applyDelete(mesh, { faces, patch = 'open' }) {
 // ---------------------------------------------------------------- replay
 
 const OPS = {
+  bodyshape: applyBodyShape,
   orient: applyOrient,
   scale: applyScale,
   slice: applySlice,

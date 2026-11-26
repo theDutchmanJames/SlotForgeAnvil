@@ -29,6 +29,24 @@ let checked = null,
 const copy = (a) => a.slice();
 
 const methods = {
+  // A preview of steps not yet committed: replayed with a cache of its own, so
+  // the current body, its checks and the exports stay as they are.
+  previewSteps({ steps }) {
+    if (!source) throw Error('No model is loaded.');
+    const { mesh, original, results } = replay(source, steps, new Map(), ctx);
+    const stats = meshStats(mesh);
+    return {
+      value: {
+        positions: copy(mesh.positions),
+        indices: copy(mesh.indices),
+        twins: stats.twins,
+        original: { positions: copy(original.positions), indices: copy(original.indices) },
+        results,
+        stats: { ...stats, twins: undefined },
+      },
+      transfer: (v) => [v.positions.buffer, v.indices.buffer, v.twins.buffer, v.original.positions.buffer, v.original.indices.buffer],
+    };
+  },
   // bytes: the STL file. Returns the guessed orientation.
   load({ bytes }) {
     source = readSTLMesh(bytes);

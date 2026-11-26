@@ -16,3 +16,6 @@ desktop.ini
 .DS_Store
 # Icon design sketches (kept on this computer)
 docs/icon-concepts/
+
+# Browser test output (tests/editor-browser.mjs)
+test-results/

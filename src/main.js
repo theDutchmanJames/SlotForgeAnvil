@@ -6,6 +6,9 @@ import './style.css';
 import './update-basics.css';
 import './update-window.css';
 import './update-ui.js';
+import './editor-tools.css';
+import { createEditorTools } from './editor-panel.js';
+import { matchesStep, stepName } from './editor-operations.js';
 import { applyThemeState, loadTheme, read as readTheme, saveTheme, STORAGE_KEY as THEME_STORAGE_KEY } from './app-theme.js';
 import EngineWorker from './geometry/engine.worker.js?worker&inline';
 import brandIcon from './assets/slotforge-anvil.svg?inline';
@@ -155,12 +158,30 @@ $('#app').innerHTML = `
   </div>
   <aside class="side">
     <div class="panel" id="panel"></div>
-    <div class="stepsbox"><div class="top"><span class="eyebrow">Steps</span><span>click one to change it</span></div><div class="steps" id="steps"></div></div>
+    <div class="stepsbox"><div class="top"><span class="eyebrow">Steps</span><span>click one to change it</span></div><input class="editor-search" data-editor="search" type="search" aria-label="Search steps" placeholder="Search steps and notes"><div class="steps" id="steps"></div></div>
   </aside>
 </div>
 <footer class="status" id="status"></footer>`;
 
 const viewport = new Viewport($('#view'));
+// Body shaping, Feature layout, step names and notes, and the build sheet.
+const editor = createEditorTools({
+  project: () => project,
+  result: () => result,
+  editing: () => project?.steps.find((s) => s.id === ui.editStep),
+  busy: () => ui.busy,
+  commit,
+  render: () => renderAll(),
+  renderSteps: () => renderSteps(),
+  selectStep: (id) => (ui.editStep = id),
+  head: (title, text) => head(title, text),
+  icon,
+  preview: (steps) => call('previewSteps', { steps }),
+  showPreview: (r) => viewport.setModel(r),
+  restoreView: () => result && showResult(result),
+  download: (html) => download(fileName('stl').replace(/\.stl$/, ' build sheet.html'), html, 'text/html'),
+  error: (message) => toast(message, 'bad'),
+});
 // For checks in the browser while developing; not in the built app.
 if (import.meta.env.DEV) globalThis.__anvil = { get ui() { return ui; }, get project() { return project; }, viewport, get result() { return result; }, applyGuide: () => applyGuide(), renderPanel: () => renderPanel() };
 
@@ -199,6 +220,7 @@ function call(method, args) {
 const partsSent = new Set();
 async function rebuild() {
   if (!project) return;
+  editor.stopPreview();
   const token = ++buildToken;
   setBusy(true);
   try {
@@ -219,13 +241,8 @@ async function rebuild() {
     result = r;
     selection = new Uint8Array(r.stats.triangles);
     selectedCount = 0;
-    viewport.setModel(r);
-    viewport.setShowOriginal(ui.look.original);
-    applyHeat();
-    viewport.setShowCentre(project.mirror);
+    showResult(r);
     clearMeasure();
-    applySection();
-    applyGuide();
     const broken = r.results.filter((s) => s.state === 'error');
     if (broken.length) toast(`${broken.length} step${broken.length > 1 ? 's' : ''} could not be done. See the step list.`, 'bad');
   } catch (e) {
@@ -235,6 +252,16 @@ async function rebuild() {
     renderAll();
     if (token === buildToken) applyHeat();
   }
+}
+
+// The built body in the view, with the looks switched on (also after a preview).
+function showResult(r) {
+  viewport.setModel(r);
+  viewport.setShowOriginal(ui.look.original);
+  applyHeat();
+  viewport.setShowCentre(project.mirror);
+  applySection();
+  applyGuide();
 }
 
 function setBusy(on) {
@@ -265,6 +292,7 @@ async function openFile(file) {
 }
 
 async function startProject(p, alreadyLoaded = false, panel = 'home') {
+  editor.reset();
   project = p;
   history.clear();
   ui.editStep = null;
@@ -330,6 +358,7 @@ function download(name, data, type) {
 
 // Every change to the project goes through here, so undo always works.
 function commit(change, rebuildAfter = true) {
+  editor.stopPreview();
   history.push(snapshot(project));
   change();
   scheduleSave();
@@ -377,7 +406,7 @@ const MENUS = [
   {
     id: 'shape',
     name: 'Shape',
-    tools: [['slice', 'slice', 'Slice'], ['cutoff', 'cutoff', 'Cut off'], ['select', 'trash', 'Delete selection'], ['smooth', 'smooth', 'Smooth'], ['panellines', 'detail', 'Panel lines'], ['text', 'text', 'Text'], ['addpart', 'plus', 'Add part']],
+    tools: [['bodyshape', 'stretch', 'Body shaping'], ['featurelayout', 'move', 'Feature layout'], ['slice', 'slice', 'Slice'], ['cutoff', 'cutoff', 'Cut off'], ['select', 'trash', 'Delete selection'], ['smooth', 'smooth', 'Smooth'], ['panellines', 'detail', 'Panel lines'], ['text', 'text', 'Text'], ['addpart', 'plus', 'Add part']],
   },
   {
     id: 'windows',
@@ -541,6 +570,8 @@ function renderPanel() {
   const editing = project.steps.find((s) => s.id === ui.editStep);
   const panel = editing ? STEP_PANEL[editing.type] : ui.panel;
   el.innerHTML = {
+    bodyshape: editor.shapePanel,
+    featurelayout: editor.layoutPanel,
     home: panelHome,
     orient: panelOrient,
     scale: panelScale,
@@ -581,6 +612,7 @@ function renderPanel() {
     addpart: panelAddPart,
     final: panelFinal,
   }[panel](editing);
+  if (editing) el.insertAdjacentHTML('afterbegin', editor.metadataPanel(editing));
   drawSeparateParts();
   drawPostMarks(panel === 'posts');
   drawWindows(panel === 'windows' || panel === 'buck' || panel === 'lenses');
@@ -923,8 +955,8 @@ function panelStepInfo(editing) {
 
 // ------------------------------------------------------------ repair panels
 
-const STEP_PANEL = { orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', solid: 'solid', rebuild: 'rebuild', symmetrize: 'symmetry', panellines: 'panellines', text: 'text', interior: 'interior', lights: 'lights', reduce: 'reduce', guidecut: 'clearance', mounts: 'tabs', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
-const STEP_MENU = { windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', cutoff: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', solid: 'repair', rebuild: 'repair', symmetrize: 'repair', panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', reduce: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', guidecut: 'chassis', mounts: 'posts', posts: 'posts' };
+const STEP_PANEL = { bodyshape: 'bodyshape', orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', solid: 'solid', rebuild: 'rebuild', symmetrize: 'symmetry', panellines: 'panellines', text: 'text', interior: 'interior', lights: 'lights', reduce: 'reduce', guidecut: 'clearance', mounts: 'tabs', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
+const STEP_MENU = { bodyshape: 'shape', windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', cutoff: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', solid: 'repair', rebuild: 'repair', symmetrize: 'repair', panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', reduce: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', guidecut: 'chassis', mounts: 'posts', posts: 'posts' };
 
 // Results the worker works out on request, kept until the shape changes.
 const lookups = {
@@ -3079,12 +3111,17 @@ function panelFinal() {
         (r) => `<div class="prow fc-${r.state}"><span class="dot ${r.state === 'ok' ? 'ok' : r.state === 'bad' ? 'bad' : r.state === 'warn' ? 'w' : 'no'}"></span><span><b>${r.title}</b><small>${r.text}</small></span>${r.tool ? `<button class="btn sm ghost" data-act="final-go" data-v="${r.tool}">${r.label}</button>` : ''}</div>`,
       )
       .join('')}</div>
-    <div class="row"><button class="btn primary sm" data-act="export">${icon('export')}Export STL</button>${buck.result ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export buck</button>` : ''}<button class="btn sm ghost" data-act="tool" data-v="variants">${icon('export')}Variants…</button></div>`;
+    <div class="row"><button class="btn primary sm" data-act="export">${icon('export')}Export STL</button>${buck.result ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export buck</button>` : ''}<button class="btn sm ghost" data-act="tool" data-v="variants">${icon('export')}Variants…</button><button class="btn sm ghost" data-editor-act="build-sheet" title="A page with the recipe, sizes, material and weight, to keep with the print">${icon('export')}Build sheet</button></div>`;
 }
 
-const TOOL_MENU = { panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', fix: 'repair', openings: 'repair', parts: 'repair', solid: 'repair', rebuild: 'repair', symmetry: 'repair', clearance: 'chassis', tabs: 'posts', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck', lenses: 'buck' };
+const TOOL_MENU = { bodyshape: 'shape', featurelayout: 'shape', panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', fix: 'repair', openings: 'repair', parts: 'repair', solid: 'repair', rebuild: 'repair', symmetry: 'repair', clearance: 'chassis', tabs: 'posts', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck', lenses: 'buck' };
 
 function stepDetail(step, info) {
+  if (step.type === 'bodyshape') {
+    const p = step.params,
+      pc = (v) => `${v > 0 ? '+' : ''}${v}%`;
+    return `width ${pc(p.front)} → ${pc(p.rear)}, height ${pc(p.height)}, X ${fmtLen(p.from, project.units, 1)} to ${fmtLen(p.to, project.units, 1)}`;
+  }
   const p = step.params,
     u = project.units;
   if (step.type === 'orient') return `front ${p.front}, roof ${p.up}${p.turn ? `, turned ${p.turn}°` : ''}`;
@@ -3153,16 +3190,18 @@ function renderSteps() {
     `<div class="sp fixed"><span class="n">1</span><span class="t">Import<small>${esc(project.source.fileName)}</small></span></div>` +
     project.steps
       .map((s, i) => {
+        if (!matchesStep(s, editor.search)) return '';
         const r = states.get(s.id);
         const cls = [ui.editStep === s.id ? 'on' : '', s.enabled ? '' : 'off', r?.state === 'error' ? 'error' : ''].join(' ');
         const detail = r?.state === 'error' ? r.error : stepDetail(s, r?.info);
         const name = s.type === 'delete' && s.params.label === 'parts' ? 'Remove parts' : (STEP_NAMES[s.type] ?? s.type);
         return `<div class="sp ${cls}" data-act="edit-step" data-v="${s.id}" title="${esc(detail)}"><span class="n">${i + 2}</span>
-          <span class="t">${name}<small>${esc(detail)}</small></span>
+          <span class="t">${s.editor?.name ? esc(stepName(s)) : name}${s.editor?.notes ? ` <span class="muted" title="${esc(s.editor.notes)}">· note</span>` : ''}<small>${esc(detail)}</small></span>
           <button data-act="toggle-step" data-v="${s.id}" title="${s.enabled ? 'Switch off' : 'Switch on'}">${icon(s.enabled ? 'eye' : 'eyeoff')}</button>
           <button data-act="remove-step" data-v="${s.id}" title="Remove this step">${icon('x')}</button></div>`;
       })
-      .join('');
+      .join('') +
+    (editor.search.trim() && !project.steps.some((s) => matchesStep(s, editor.search)) ? '<div class="muted" style="font-size:12px;padding:4px">No step matches.</div>' : '');
 }
 
 function renderStatus() {
@@ -3506,6 +3545,7 @@ const actions = {
     renderSub();
   },
   tool(v) {
+    editor.stopPreview();
     ui.panel = v;
     ui.editStep = null;
     if (v !== 'windows') ui.win.draft = ui.win.editing = null;
@@ -4362,6 +4402,7 @@ const actions = {
     toast(`Scaled the body by ×${round(factor, 4)}.`);
   },
   'edit-step'(v) {
+    editor.stopPreview();
     const step = project.steps.find((s) => s.id === v);
     if (!step) return;
     ui.editStep = ui.editStep === v ? null : v;

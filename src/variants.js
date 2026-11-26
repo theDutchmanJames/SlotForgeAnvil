@@ -10,6 +10,8 @@ const L = (v, f) => (Number.isFinite(v) ? v * f : v);
 
 // Each step type: what in its params is a place or a size of the car.
 const SCALE = {
+  // The region and the base move with the scale; the percentages stay.
+  bodyshape: (p, f) => ({ ...p, from: L(p.from, f), to: L(p.to, f), blend: L(p.blend, f), base: L(p.base, f) }),
   slice: (p, f) => ({ ...p, at: L(p.at, f), pivot: L(p.pivot, f) }),
   cutoff: (p, f) => ({ ...p, cuts: p.cuts.map((c) => ({ ...c, at: P(c.at, f), w: L(c.w, f), h: L(c.h, f) })) }),
   floor: (p, f) => ({ ...p, at: L(p.at, f), blend: L(p.blend, f) }),

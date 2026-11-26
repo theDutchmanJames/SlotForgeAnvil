@@ -2,7 +2,12 @@
 // Everything else (the shape you see) is rebuilt from these.
 
 export const FORMAT = 'slotforge-anvil-project';
-export const VERSION = 1;
+// The newest project format this Anvil reads. Version 2 adds body shaping: an
+// older Anvil refuses such a file instead of skipping the step and exporting
+// the wrong shape. Projects without it are still written as version 1, so
+// older Anvils keep opening them.
+export const VERSION = 2;
+export const fileVersion = (p) => (p.steps.some((s) => s.type === 'bodyshape') ? 2 : 1);
 
 let counter = 0;
 export const newId = () => `s${Date.now().toString(36)}${(counter++).toString(36)}`;
@@ -39,6 +44,7 @@ export const PRINT_WALLS = {
 };
 
 export const STEP_NAMES = {
+  bodyshape: 'Body shaping',
   orient: 'Orient',
   scale: 'Scale',
   slice: 'Slice',
@@ -136,7 +142,7 @@ function fromBase64(text) {
 export function encodeProjectFile(p) {
   return JSON.stringify({
     format: FORMAT,
-    version: VERSION,
+    version: fileVersion(p),
     name: p.name,
     units: p.units,
     mirror: p.mirror,
