@@ -15,7 +15,7 @@ import {
   replay,
   runCount,
 } from '../src/geometry/engine.js';
-import { encodeSTL, readSTLMesh } from '../src/geometry/stl-mesh.js';
+import { encodeSTL, LIMIT, readSTLMesh } from '../src/geometry/stl-mesh.js';
 import { model } from './models.js';
 
 // A closed box, x 0..sx, y 0..sy, z 0..sz, outward winding.
@@ -41,6 +41,27 @@ const signedVolume = ({ positions: p, indices: t }) => {
   }
   return v / 6;
 };
+
+// A binary STL of n separate triangles, laid out in a grid.
+function bigSTL(n) {
+  const bytes = new Uint8Array(84 + n * 50),
+    view = new DataView(bytes.buffer);
+  view.setUint32(80, n, true);
+  for (let i = 0, o = 96; i < n; i++, o += 50) {
+    const x = i % 1000,
+      y = Math.floor(i / 1000);
+    [x, y, 0, x + 1, y, 0, x, y + 1, 0].forEach((v, k) => view.setFloat32(o + k * 4, v, true));
+  }
+  return bytes;
+}
+
+test('STLs over a million triangles open, up to the limit', () => {
+  assert.equal(LIMIT, 3_000_000);
+  assert.equal(readSTLMesh(bigSTL(1_003_574)).indices.length / 3, 1_003_574);
+  const over = new Uint8Array(84 + (LIMIT + 1) * 50);
+  new DataView(over.buffer).setUint32(80, LIMIT + 1, true);
+  assert.throws(() => readSTLMesh(over), /3,000,001 triangles; Anvil opens up to 3,000,000/);
+});
 
 test('STL round trip keeps every triangle and vertex', () => {
   const mesh = box(10, 20, 30);

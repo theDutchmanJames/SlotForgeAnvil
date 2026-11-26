@@ -1,4 +1,6 @@
-const LIMIT = 1_000_000;
+// Three million triangles reads in a few seconds and fits easily in memory;
+// Check suggests Reduce for anything over a million.
+export const LIMIT = 3_000_000;
 function byteView(input) {
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input))
@@ -41,7 +43,7 @@ export function readSTLMesh(input) {
       throw new Error('The binary STL is empty or truncated.');
     if (count > LIMIT)
       throw new Error(
-        `This edition supports up to ${LIMIT.toLocaleString()} STL triangles per import.`,
+        `This STL has ${count.toLocaleString()} triangles; Anvil opens up to ${LIMIT.toLocaleString()}. Reduce it in your 3D program first.`,
       );
     for (let i = 0; i < count; i++) {
       let offset = 84 + i * 50 + 12;
@@ -61,7 +63,7 @@ export function readSTLMesh(input) {
     let found = 0;
     for (const m of contents.matchAll(facets)) {
       if (++found > LIMIT)
-        throw new Error('This ASCII STL exceeds the triangle limit.');
+        throw new Error(`This STL has more than ${LIMIT.toLocaleString()} triangles, the most Anvil opens. Reduce it in your 3D program first.`);
       for (let j = 1; j < 10; j += 3)
         target.point(Number(m[j]), Number(m[j + 1]), Number(m[j + 2]));
     }

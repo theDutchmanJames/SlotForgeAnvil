@@ -1039,7 +1039,12 @@ function panelCheck() {
   else if (c.kind === 'many')
     expect = '<div class="note warn"><b>The parts overlap.</b><br>Keep the body under Parts, or merge everything into one clean piece with <button class="btn sm ghost" data-act="final-go" data-v="rebuild">Rebuild</button>.</div>';
   else expect = '<div class="note ok"><b>The outer surface stays exactly as it is.</b><br>' + (fixable ? 'The light fix only removes and untangles faults.' : 'This model needs no repair.') + '</div>';
-  const coarse = c.triangles < 4000 ? '<div class="note warn">Only ' + c.triangles.toLocaleString() + ' triangles: curved panels may print with visible flat facets.</div>' : '';
+  const coarse =
+    c.triangles < 4000
+      ? '<div class="note warn">Only ' + c.triangles.toLocaleString() + ' triangles: curved panels may print with visible flat facets.</div>'
+      : c.triangles > 1_000_000 && !project.steps.some((s) => s.type === 'reduce')
+        ? '<div class="note warn">Over a million triangles: every step will be slow. A printer cannot show that much detail at slot car size, so <button class="btn sm ghost" data-act="final-go" data-v="reduce">Reduce</button> it first.</div>'
+        : '';
   return `${head('Check', `${c.triangles.toLocaleString()} triangles`)}
     <div class="kinds">${KINDS.map(([k, n, d]) => `<div class="kind${c.kind === k ? ' on' : ''}"><b>${n}</b>${d}</div>`).join('')}</div>
     <div class="verdict">${VERDICT[c.kind]}</div>
