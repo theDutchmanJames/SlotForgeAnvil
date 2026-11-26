@@ -10,6 +10,7 @@ import { bounds } from './bounds.js';
 export { bounds };
 import { applyFill, applyRepair } from './repair.js';
 import { applyReduce } from './reduce.js';
+import { applyScanSmooth } from './denoise.js';
 import { applyFloor, applyHollow } from './shell.js';
 import { applyHammer } from './hammer.js';
 import { applyArchCut, applyGuideCut, applyStretch } from './arches.js';
@@ -497,6 +498,7 @@ const OPS = {
   fill: applyFill,
   solid: applySolid,
   reduce: applyReduce,
+  scansmooth: applyScanSmooth,
   floor: applyFloor,
   hollow: applyHollow,
   hammer: applyHammer,

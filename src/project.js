@@ -7,10 +7,16 @@ export const FORMAT = 'slotforge-anvil-project';
 // the wrong shape. Projects without it are still written as version 1, so
 // older Anvils keep opening them.
 // Version 3 adds tilt, lean and mirror to Orient, which an older Anvil would
-// skip without a word.
-export const VERSION = 3;
+// skip without a word; version 4 adds Smooth scan.
+export const VERSION = 4;
 export const fileVersion = (p) =>
-  p.steps.some((s) => s.type === 'orient' && (s.params.tilt || s.params.lean || s.params.mirror)) ? 3 : p.steps.some((s) => s.type === 'bodyshape') ? 2 : 1;
+  p.steps.some((s) => s.type === 'scansmooth')
+    ? 4
+    : p.steps.some((s) => s.type === 'orient' && (s.params.tilt || s.params.lean || s.params.mirror))
+      ? 3
+      : p.steps.some((s) => s.type === 'bodyshape')
+        ? 2
+        : 1;
 
 let counter = 0;
 export const newId = () => `s${Date.now().toString(36)}${(counter++).toString(36)}`;
@@ -74,6 +80,7 @@ export const STEP_NAMES = {
   interior: 'Interior',
   lights: 'LED lights',
   reduce: 'Reduce',
+  scansmooth: 'Smooth scan',
 };
 
 // ------------------------------------------------------------ units

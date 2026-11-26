@@ -61,6 +61,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 - **Symmetrize:** keep the left or the right side and mirror it over the other, so both sides match exactly; the side that goes shows in red. Anvil says how much the two sides differ and where the model's middle really is.
 - **Make solid:** turn a hollow shell into a solid. The inner skin and anything loose inside (seats, a dashboard) goes, the windows are closed, and the underside is cut off flat at the height you choose, wheel arches included. The inner skin shows in red first.
 - **Parts, openings and reduce:** tick which loose parts to keep, close chosen openings with a flat or smooth patch, and thin out the triangles where the surface allows it.
+- **Smooth scan:** for a laser-scanned body. Takes the grain out of the surface and straightens ragged rims around openings and cut edges, while creases and panel lines stay sharp and the body does not shrink. You choose how far the surface, and the rims, may move at most; no triangle turns over.
 
 ### Scale it
 

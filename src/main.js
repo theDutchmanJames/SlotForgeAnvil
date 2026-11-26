@@ -390,7 +390,7 @@ const MENUS = [
   {
     id: 'repair',
     name: 'Repair',
-    tools: [['check', 'checklist', 'Check'], ['fix', 'wrench', 'Light fix'], ['parts', 'parts', 'Parts'], ['openings', 'fill', 'Close openings'], ['rebuild', 'rebuild', 'Rebuild'], ['symmetry', 'mirror', 'Symmetrize'], ['solid', 'solid', 'Make solid'], ['reduce', 'reduce', 'Reduce']],
+    tools: [['check', 'checklist', 'Check'], ['fix', 'wrench', 'Light fix'], ['parts', 'parts', 'Parts'], ['openings', 'fill', 'Close openings'], ['rebuild', 'rebuild', 'Rebuild'], ['symmetry', 'mirror', 'Symmetrize'], ['solid', 'solid', 'Make solid'], ['reduce', 'reduce', 'Reduce'], ['scansmooth', 'smooth', 'Smooth scan']],
   },
   { id: 'scale', name: 'Scale', tools: [['orient', 'orient', 'Orient'], ['scale', 'scale', 'Scale']] },
   {
@@ -593,6 +593,7 @@ function renderPanel() {
     variants: panelVariants,
     text: panelText,
     reduce: panelReduce,
+    scansmooth: panelScanSmooth,
     chassis: panelChassis,
     tyres: panelTyres,
     clearance: panelClearance,
@@ -963,8 +964,8 @@ function panelStepInfo(editing) {
 
 // ------------------------------------------------------------ repair panels
 
-const STEP_PANEL = { bodyshape: 'bodyshape', orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', solid: 'solid', rebuild: 'rebuild', symmetrize: 'symmetry', panellines: 'panellines', text: 'text', interior: 'interior', lights: 'lights', reduce: 'reduce', guidecut: 'clearance', mounts: 'tabs', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
-const STEP_MENU = { bodyshape: 'shape', windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', cutoff: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', solid: 'repair', rebuild: 'repair', symmetrize: 'repair', panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', reduce: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', guidecut: 'chassis', mounts: 'posts', posts: 'posts' };
+const STEP_PANEL = { bodyshape: 'bodyshape', orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', solid: 'solid', rebuild: 'rebuild', symmetrize: 'symmetry', panellines: 'panellines', text: 'text', interior: 'interior', lights: 'lights', reduce: 'reduce', scansmooth: 'scansmooth', guidecut: 'clearance', mounts: 'tabs', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
+const STEP_MENU = { bodyshape: 'shape', windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', cutoff: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', solid: 'repair', rebuild: 'repair', symmetrize: 'repair', panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', reduce: 'repair', scansmooth: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', guidecut: 'chassis', mounts: 'posts', posts: 'posts' };
 
 // Results the worker works out on request, kept until the shape changes.
 const lookups = {
@@ -1260,6 +1261,34 @@ function drawOpenings(show) {
 function reduceTolerance() {
   ui.reduce ??= { keep: 50, tolerance: null };
   return ui.reduce.tolerance ?? Math.max(0.005, round(Math.hypot(...result.stats.bounds.size) * 0.0004, 3));
+}
+
+// Smooth scan: grain and ragged rims out of a scanned body, within a distance.
+function scanOptions(editing) {
+  if (editing && ui.scanFor !== editing.id) {
+    ui.scan = { ...editing.params };
+    ui.scanFor = editing.id;
+  }
+  if (!editing) ui.scanFor = null;
+  const diag = Math.hypot(...result.stats.bounds.size);
+  ui.scan ??= { strength: 4, tolerance: Math.max(0.02, round(diag * 0.0006, 3)), rim: Math.max(0.05, round(diag * 0.002, 2)), edges: true };
+  ui.scan.rim ??= ui.scan.tolerance * 4;
+  return ui.scan;
+}
+
+function panelScanSmooth(editing) {
+  const o = scanOptions(editing),
+    u = project.units;
+  const done = editing && result.results.find((r) => r.id === editing.id)?.info;
+  return `${head(editing ? 'Change smooth scan' : 'Smooth scan', 'Takes the grain out of a scanned surface and straightens ragged rims around openings and cut edges. Creases and panel lines stay sharp, and the body does not shrink.')}
+    <div class="f">Strength<div class="row"><input type="range" data-field="scan-strength" min="1" max="10" step="1" value="${o.strength}"><span class="mono" id="scan-strength-val">${o.strength}</span></div></div>
+    <div class="f">The surface may move at most<div class="row">${numField('scan-tol', round(toUnits(o.tolerance, u), 4), u)}</div>
+      <div class="muted" style="font-weight:400;font-size:12px">No point moves further than this, so the shape stays as it was. Raise it for coarser grain.</div></div>
+    <label class="chk"><input type="checkbox" data-field="scan-edges" ${o.edges ? 'checked' : ''}>Straighten ragged rims and edges</label>
+    ${o.edges ? `<div class="f">Rims and edges may move at most<div class="row">${numField('scan-rim', round(toUnits(o.rim, u), 4), u)}</div><div class="muted" style="font-weight:400;font-size:12px">A ragged rim waves further than the grain on a panel. The surface beside it follows, fading out.</div></div>` : ''}
+    ${done ? `<div class="note">${done.moved.toLocaleString()} points moved, on average ${fmtLen(done.mean, u, 3)}, at most ${fmtLen(done.most, u, 3)}${done.creasePoints ? `; ${done.creasePoints.toLocaleString()} points along rims and creases straightened` : ''}.</div>` : ''}
+    <div class="row"><button class="btn primary sm" data-act="scan-apply">${icon('smooth')}${editing ? 'Update step' : 'Smooth scan'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>
+    <div class="muted" style="font-size:12px">The step goes before Hollow and the fitted details, so walls and windows are made on the cleaned body. Compare with Original under Look.</div>`;
 }
 
 function panelReduce(editing) {
@@ -3187,6 +3216,7 @@ function stepDetail(step, info) {
   if (step.type === 'solid')
     return `${info ? `${info.removed.toLocaleString()} triangles of inner skin removed` : 'inner skin removed'}${p.bottom != null ? ` · flat bottom at ${fmtLen(p.bottom, u)}` : ''}`;
   if (step.type === 'fill') return `${p.loops.length} opening${p.loops.length === 1 ? '' : 's'} · ${p.mode}`;
+  if (step.type === 'scansmooth') return `strength ${p.strength}, within ${fmtLen(p.tolerance, u, 3)}${p.edges ? `, rims within ${fmtLen(p.rim ?? p.tolerance * 4, u, 2)}` : ''}`;
   if (step.type === 'reduce')
     return info ? `${info.after.toLocaleString()} of ${info.before.toLocaleString()} triangles · within ${fmtLen(info.moved, u, 3)}` : `keep ${Math.round(p.target * 100)}%`;
   return '';
@@ -3951,6 +3981,21 @@ const actions = {
     const s = ui.solid;
     addOrUpdateStep('solid', { bottom: s?.flat ? round(s.bottom, 4) : null });
   },
+  'scan-apply'() {
+    const o = ui.scan,
+      params = { strength: o.strength, tolerance: o.tolerance, rim: o.rim, edges: o.edges };
+    const editing = project.steps.find((s) => s.id === ui.editStep && s.type === 'scansmooth');
+    if (editing) return addOrUpdateStep('scansmooth', params);
+    // After the early repairs, before anything is fitted to the body.
+    commit(() => {
+      const early = ['orient', 'scale', 'repair', 'fill', 'delete', 'reduce', 'rebuild', 'symmetrize', 'scansmooth'];
+      let at = 0;
+      while (at < project.steps.length && early.includes(project.steps[at].type)) at++;
+      const step = { id: newId(), type: 'scansmooth', enabled: true, params };
+      project.steps.splice(at, 0, step);
+      ui.editStep = step.id;
+    });
+  },
   'reduce-apply'() {
     addOrUpdateStep('reduce', { target: ui.reduce.keep / 100, tolerance: reduceTolerance() });
   },
@@ -4532,6 +4577,10 @@ document.addEventListener('input', (e) => {
     ui.paint.radius = v;
     const el = $('#paint-radius-val');
     if (el) el.textContent = fmtLen(v, project.units, 1);
+  } else if (f === 'scan-strength') {
+    ui.scan.strength = v;
+    const el = $('#scan-strength-val');
+    if (el) el.textContent = v;
   } else if (f === 'reduce-keep-range') {
     ui.reduce.keep = v;
     const el = $('#reduce-keep-val');
@@ -4658,6 +4707,15 @@ document.addEventListener('change', (e) => {
     return;
   } else if (f === 'reduce-keep') {
     ui.reduce.keep = Math.min(95, Math.max(5, v));
+    return renderPanel();
+  } else if (f === 'scan-tol') {
+    if (v > 0) ui.scan.tolerance = round(fromUnits(v, u), 4);
+    return;
+  } else if (f === 'scan-rim') {
+    if (v > 0) ui.scan.rim = round(fromUnits(v, u), 4);
+    return;
+  } else if (f === 'scan-edges') {
+    ui.scan.edges = e.target.checked;
     return renderPanel();
   } else if (f === 'reduce-tol') {
     if (v > 0) ui.reduce.tolerance = fromUnits(v, u);
