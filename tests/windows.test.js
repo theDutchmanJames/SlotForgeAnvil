@@ -124,3 +124,23 @@ function sideAt(mesh, x, z) {
   for (let i = 0; i < p.length; i += 3) if (Math.abs(p[i] - x) < 1.5 && Math.abs(p[i + 2] - z) < 1.5) y = Math.min(y, p[i + 1]);
   return y;
 }
+
+// A headlight drawn on the Datsun's lamp, which sits in a bowl: the hollowed
+// skins fold there, and along the cut the wall is thicker than it reaches.
+test('test car Datsun: an open window on the headlight in its bowl closes', { skip: !existsSync(model('datsun.stl')) }, async () => {
+  const { guessOrient } = await import('../src/geometry/engine.js');
+  const src = readSTLMesh(readFileSync(model('datsun.stl')));
+  const g = guessOrient(src);
+  const body = replay(src, [
+    { id: 'o', type: 'orient', enabled: true, params: { front: g.front, up: g.up, turn: 0 } },
+    { id: 'h', type: 'hollow', enabled: true, params: { wall: 1 } },
+  ]).mesh;
+  const points = [[-38.921, -17.966, 13.776], [-39.175, -17.37, 12.359], [-39.242, -15.953, 11.763], [-39.125, -14.537, 12.359], [-38.921, -13.941, 13.776], [-39.001, -14.537, 15.193], [-39.182, -15.953, 15.789], [-38.984, -17.37, 15.193]];
+  const win = { id: 'h', name: 'Headlight', points, corners: points.map(() => false), normal: [-0.9215, -0.2818, -0.2671], mirror: true, state: 'open', lens: true };
+  const out = applyWindows(body, { windows: [win], depth: 3, fine: true });
+  assert.deepEqual(out.info.warnings, []);
+  assert.equal(out.info.cut, 2);
+  const s = meshStats(out);
+  assert.equal(s.openEdges, 0);
+  assert.equal(s.faultyEdges, 0);
+});

@@ -6,7 +6,8 @@ import { classifySkins, volume, wallThickness } from './shell.js';
 import { rayCaster } from './rays.js';
 import { findArches } from './chassis.js';
 import { makeBuck } from './buck.js';
-import { windowOutlines } from './windows.js';
+import { makeLenses } from './lenses.js';
+import { windowOutlines, windowState } from './windows.js';
 import { solidPreview } from './solid.js';
 import { symmetryReport } from './symmetry.js';
 import { grooves } from './detail.js';
@@ -100,6 +101,19 @@ const methods = {
     }));
     const { mesh, info } = makeBuck(uncut, { ...opts, outlines, posts: posts?.params.posts ?? [] });
     return { value: { positions: mesh.positions, indices: mesh.indices, info }, transfer: (v) => [v.positions.buffer, v.indices.buffer] };
+  },
+  // Light lenses (printed, and bucks to vac-form them), from the body before
+  // its windows are cut, for every open window marked Lens.
+  lenses({ opts }) {
+    if (!source || !lastSteps) throw Error('No model is built yet.');
+    const at = lastSteps.findIndex((s) => (s.type === 'windows' || s.type === 'posts') && s.enabled);
+    const uncut = at < 0 ? current : replay(source, lastSteps.slice(0, at), cache, ctx).mesh;
+    const win = lastSteps.find((s) => s.type === 'windows' && s.enabled);
+    const lights = (win?.params.windows ?? []).filter((w) => w.lens && windowState(w) === 'open');
+    const outlines = windowOutlines(lights, 0.25).map((o) => ({ name: `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}`, points: o.points, normal: o.normal }));
+    const out = makeLenses(uncut, outlines, opts);
+    const meshes = [out.car.lenses, out.car.plugs, out.print.lenses, out.print.plugs];
+    return { value: out, transfer: () => meshes.flatMap((m) => [m.positions.buffer, m.indices.buffer]) };
   },
   // An added part's file, read once and kept by its id.
   setPart({ id, bytes }) {

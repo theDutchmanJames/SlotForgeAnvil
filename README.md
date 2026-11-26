@@ -93,6 +93,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 
 - **Windows:** draw each window with the line tool; a smooth line runs through your points. Open windows are cut through the wall with a clean edge; side windows are mirrored. A window can also close an opening the model came with (a pane as thick as the wall, drawn round the opening on its frame), or be recessed: the glass sinks a fraction so a painted window gets a crisp edge.
 - **Window buck:** one plug for the whole cabin to vac-form a glazing insert that is glued in from the inside, with a trim line, glue margin and raised guide lines.
+- **Light lenses:** mark a headlight or taillight as an open window with Lens on, and Anvil makes a clear lens that fits its opening exactly, from the same outline: printed in clear resin (flush with the body, with a lip behind the wall), or vac-formed over a small lens buck and glued in from the inside. Both export laid out, ready to print.
 
 ### Shape and finish
 

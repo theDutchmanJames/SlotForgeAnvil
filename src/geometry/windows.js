@@ -140,11 +140,11 @@ export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane
     // The two new edges: on the outer skin and on the inner skin.
     const { twins } = pairEdges(out.indices, out.positions.length / 3, out.positions);
     const tol = Math.max(1e-3, c.size * 1e-5);
-    const onCut = (v) => {
-      const p = [out.positions[v * 3], out.positions[v * 3 + 1], out.positions[v * 3 + 2]];
-      return Math.abs(c.inside2d(dot(p, c.u), dot(p, c.v))) < tol;
-    };
-    const loops = boundaryLoops(out.indices, twins).filter((l) => l.filter(onCut).length >= l.length * 0.8);
+    // Every edge the cut made lies on the cutter: mostly on its sides, and on
+    // its back where the wall is thicker along the cut than it reaches (a
+    // sloping lamp bowl). Openings the model had elsewhere do not.
+    const onCutter = (v) => Math.abs(c.f([out.positions[v * 3], out.positions[v * 3 + 1], out.positions[v * 3 + 2]])) < tol;
+    const loops = boundaryLoops(out.indices, twins).filter((l) => l.filter(onCutter).length >= l.length * 0.8);
     const closed = closeCut(out, loops, c);
     m = closed.mesh;
     if (closed.error) report.push({ name, text: closed.error });
@@ -239,11 +239,19 @@ function closeCut(mesh, loops, c) {
   });
   if (!flat.length) return { mesh, error: 'The outline is not on the body' };
   const faces = [];
+  const extra = []; // new corners (a fan's middle), after the mesh's own
   const ring = flat.filter((f) => f.winding !== 0);
   for (const f of flat.filter((f) => f.winding === 0)) {
     const tri = earClip(f.ts);
-    if (!tri) return { mesh, error: 'The cut edge could not be closed here; it is left open' };
-    for (const k of tri) faces.push(f.loop[k]);
+    if (tri) {
+      for (const k of tri) faces.push(f.loop[k]);
+      continue;
+    }
+    // A shape that folds back over itself (where the hollow's skins pass
+    // through each other): closed by a fan from its middle, which always closes.
+    const mid = P.length / 3 + extra.length / 3;
+    for (let k = 0; k < 3; k++) extra.push(f.loop.reduce((a, v) => a + P[v * 3 + k], 0) / f.loop.length);
+    for (let i = 0; i < f.loop.length; i++) faces.push(mid, f.loop[i], f.loop[(i + 1) % f.loop.length]);
   }
   const plus = ring.filter((f) => f.winding === 1), minus = ring.filter((f) => f.winding === -1);
   if (plus.length !== minus.length || plus.length + minus.length !== ring.length)
@@ -261,7 +269,13 @@ function closeCut(mesh, loops, c) {
   const idx = new Uint32Array(mesh.indices.length + faces.length);
   idx.set(mesh.indices);
   idx.set(faces, mesh.indices.length);
-  return { mesh: { positions: mesh.positions, indices: idx } };
+  let positions = mesh.positions;
+  if (extra.length) {
+    positions = new Float32Array(P.length + extra.length);
+    positions.set(P);
+    positions.set(extra, P.length);
+  }
+  return { mesh: { positions, indices: idx } };
 }
 
 // Ear clipping of a flat polygon given as [[x, y], ...]. Triangles keep the

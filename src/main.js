@@ -50,6 +50,7 @@ import { REBUILD_DETAIL, rebuildCell } from './geometry/rebuild.js';
 import { pillarWarnings, windowOutlines, windowState } from './geometry/windows.js';
 import { sampleClosedCurve } from './geometry/curve.js';
 import { BUCK_DEFAULTS } from './geometry/buck.js';
+import { LENS_DEFAULTS } from './geometry/lenses.js';
 import {
   DEFAULT_PRINT,
   MATERIALS,
@@ -161,7 +162,7 @@ $('#app').innerHTML = `
 
 const viewport = new Viewport($('#view'));
 // For checks in the browser while developing; not in the built app.
-if (import.meta.env.DEV) globalThis.__anvil = { get ui() { return ui; }, viewport, get result() { return result; }, applyGuide: () => applyGuide(), renderPanel: () => renderPanel() };
+if (import.meta.env.DEV) globalThis.__anvil = { get ui() { return ui; }, get project() { return project; }, viewport, get result() { return result; }, applyGuide: () => applyGuide(), renderPanel: () => renderPanel() };
 
 // ------------------------------------------------------------ geometry worker
 
@@ -273,6 +274,7 @@ async function startProject(p, alreadyLoaded = false, panel = 'home') {
   ui.closeLoops = new Set();
   ui.win = { draft: null, editing: null, drag: null };
   buck.result = buck.error = null;
+  lensJob.result = lensJob.error = null;
   partMeshes.clear();
   partsShown = null;
   viewport.setExtras(null);
@@ -383,7 +385,7 @@ const MENUS = [
     tools: [['windows', 'window', 'Windows'], ['lights', 'bulb', 'LED lights']],
   },
   { id: 'posts', name: 'Posts', tools: [['posts', 'post', 'Posts'], ['tabs', 'tab', 'Tabs'], ['posteditor', 'wrench', 'Post editor']] },
-  { id: 'buck', name: 'Buck', tools: [['buck', 'buck', 'Window buck']] },
+  { id: 'buck', name: 'Buck', tools: [['buck', 'buck', 'Window buck'], ['lenses', 'bulb', 'Light lenses']] },
 ];
 
 function renderAll() {
@@ -574,14 +576,15 @@ function renderPanel() {
     posteditor: panelPostEditor,
     windows: panelWindows,
     buck: panelBuck,
+    lenses: panelLenses,
     smooth: panelSmooth,
     addpart: panelAddPart,
     final: panelFinal,
   }[panel](editing);
   drawSeparateParts();
   drawPostMarks(panel === 'posts');
-  drawWindows(panel === 'windows' || panel === 'buck');
-  drawBuck(panel === 'buck');
+  drawWindows(panel === 'windows' || panel === 'buck' || panel === 'lenses');
+  drawBuck(panel === 'buck', panel === 'lenses' ? lensPreview() : null);
   applyGuide();
   drawOpenings(panel === 'openings');
   if (panel === 'floor') floorGuide();
@@ -2470,11 +2473,12 @@ function setWindows(windows) {
   });
 }
 
-function windowName(normal) {
+// light: a headlight or taillight (a window with a lens), named by its end.
+function windowName(normal, light = false, except = null) {
   const [x, y, z] = normal;
   const ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z);
-  const base = ay >= ax && ay >= az ? 'Side window' : az >= ax ? (x < 0 ? 'Windscreen' : 'Rear window') : x < 0 ? 'Windscreen' : 'Rear window';
-  const taken = new Set(allWindows().map((w) => w.name));
+  const base = light ? (x < 0 ? 'Headlight' : 'Taillight') : ay >= ax && ay >= az ? 'Side window' : az >= ax ? (x < 0 ? 'Windscreen' : 'Rear window') : x < 0 ? 'Windscreen' : 'Rear window';
+  const taken = new Set(allWindows().filter((w) => w.id !== except).map((w) => w.name));
   if (!taken.has(base)) return base;
   for (let n = 2; ; n++) if (!taken.has(`${base} ${n}`)) return `${base} ${n}`;
 }
@@ -2532,8 +2536,9 @@ function panelWindows(editing) {
       <div class="muted" style="font-size:12px">Draw on the outside of the body. The side and front views make it easy; with Mirror on, side windows get their twin on the other side.</div>`;
   const rows = wins
     .map(
-      (w) => `<div class="prow${ui.win.editing === w.id ? ' cur' : ''}"><span><b>${esc(w.name)}</b><small>${w.points.length} points${w.mirror ? ' · both sides' : ''}</small></span>
+      (w) => `<div class="prow${ui.win.editing === w.id ? ' cur' : ''}"><span><b>${esc(w.name)}</b><small>${w.points.length} points${w.mirror ? ' · both sides' : ''}${w.lens && windowState(w) === 'open' ? ' · lens' : ''}</small></span>
         <span class="seg">${[['open', 'Open', 'Cut through the wall'], ['solid', 'Solid', 'Only an outline, for the buck'], ['fill', 'Close', 'Fill an opening the model came with'], ['recess', 'Recessed', 'Sink the glass a little, for a crisp painted window']].map(([k, n, t]) => `<button data-act="win-state" data-v="${w.id}|${k}" class="${windowState(w) === k ? 'on' : ''}" title="${t}">${n}</button>`).join('')}</span>
+        ${windowState(w) === 'open' ? `<button class="btn sm icon ghost${w.lens ? ' on' : ''}" data-act="win-lens" data-v="${w.id}" title="${w.lens ? 'A light: Buck › Light lenses makes a lens for it. Click to make it a plain window again' : 'Lens: a headlight or taillight. Buck › Light lenses then makes a clear lens that fits it'}">${icon('bulb')}</button>` : ''}
         <button class="btn sm icon ghost" data-act="win-mirror" data-v="${w.id}" title="${w.mirror ? 'Only this side' : 'Both sides'}">${icon('mirror')}</button>
         <button class="btn sm icon ghost" data-act="win-edit" data-v="${w.id}" title="Change the outline">${icon('line')}</button>
         <button class="btn sm icon ghost" data-act="win-delete" data-v="${w.id}" title="Remove this window">${icon('trash')}</button></div>`,
@@ -2544,7 +2549,7 @@ function panelWindows(editing) {
     states.has('fill') ? `<span class="fx">Closed window's pane${numField('win-pane', round(toUnits(step.params.pane ?? hollowWall() ?? 1, u), 2), u)}</span>` : '',
     states.has('recess') ? `<span class="fx">Recessed windows sink${numField('win-recess', round(toUnits(step.params.recess ?? 0.3, u), 2), u)}</span>` : '',
   ].join('');
-  return `${head('Windows', 'Each window is an outline on the body. Open: cut through the wall. Solid: only marked (for the buck). Close: a pane fills an opening the model came with (draw round the opening on its frame). Recessed: the glass sinks a little, so a painted window gets a crisp edge.')}
+  return `${head('Windows', 'Each window is an outline on the body. Open: cut through the wall. Solid: only marked (for the buck). Close: a pane fills an opening the model came with (draw round the opening on its frame). Recessed: the glass sinks a little, so a painted window gets a crisp edge. Headlights and taillights: draw them here too, Open, with Lens on.')}
     ${sizes ? `<div class="g2">${sizes}</div>` : ''}
     ${hollow ? '' : '<div class="muted" style="font-size:12px">Open windows cut through a shell wall. If the body is still solid, run Shell › Hollow first.</div>'}
     ${tool}
@@ -2712,8 +2717,9 @@ async function makeBuckNow() {
 
 let buckMarks = false,
   buckShown = null;
-function drawBuck(show) {
-  const r = (show && buck.result) || null;
+// other: something to show in the buck's place (the light lenses).
+function drawBuck(show, other = null) {
+  const r = (show && buck.result) || other || null;
   if (r !== buckShown) viewport.setBuck(r ? { positions: r.positions, indices: r.indices } : null);
   buckShown = r;
   if (show && result) {
@@ -2762,6 +2768,76 @@ function panelBuck() {
           ${r.info.changedCount ? `<div class="note warn">The sheet could not come off as the body is shaped in ${r.info.changed.length} place${r.info.changed.length === 1 ? '' : 's'} (red on the car): the buck is filled there, by up to ${fmtLen(r.info.changedMost, u)}. Expect a small gap between the insert and the wall there; usually the shoulder below the windows or a lip round the glass.</div>` : '<div class="note">The sheet comes off everywhere without changing the shape.</div>'}
           ${r.info.warnings.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
           <div class="muted" style="font-size:12px">Print the buck solid, in fine layers, and smooth it: layer lines show through the formed sheet.</div>`
+        : ''
+    }`;
+}
+
+// ------------------------------------------------------------ light lenses
+
+function lensSettings() {
+  const s = { ...LENS_DEFAULTS, ...(project.lenses ?? {}) };
+  s.wall ??= hollowWall() ?? 1;
+  return s;
+}
+function setLensSetting(key, value) {
+  commit(() => (project.lenses = { ...lensSettings(), [key]: value }), false);
+}
+// The open windows marked Lens.
+const lensLights = () => allWindows().filter((w) => w.lens && windowState(w) === 'open');
+// The last lenses made: kept until the body or the settings change.
+const lensJob = { result: null, key: null, busy: false, error: null, show: 'lens' };
+const lensKey = () => JSON.stringify([buildToken, lensSettings()]);
+async function makeLensesNow() {
+  lensJob.busy = true;
+  lensJob.error = null;
+  renderPanel();
+  try {
+    lensJob.result = await call('lenses', { opts: lensSettings() });
+    lensJob.key = lensKey();
+  } catch (e) {
+    lensJob.error = e.message;
+    lensJob.result = null;
+  }
+  lensJob.busy = false;
+  renderPanel();
+}
+function lensPreview() {
+  const r = lensJob.result;
+  if (!r) return null;
+  const m = lensJob.show === 'buck' ? r.car.plugs : r.car.lenses;
+  return m.indices.length ? m : null;
+}
+
+function panelLenses() {
+  const s = lensSettings(),
+    u = project.units;
+  const r = lensJob.result,
+    stale = r && lensJob.key !== lensKey();
+  const f = (k, label, digits = 2) => `<span class="fx">${label}${numField(`ln-${k}`, round(toUnits(s[k], u), digits), u)}</span>`;
+  const lights = lensLights();
+  const count = lights.reduce((n, w) => n + (w.mirror ? 2 : 1), 0);
+  return `${head('Light lenses', 'Clear lenses that fit the headlight and taillight openings exactly, made from the same outline that cuts the opening: printed in clear resin, or vac-formed over a small buck. Made from the body before its windows are cut.')}
+    ${
+      lights.length
+        ? `<div class="note">${count} light${count === 1 ? '' : 's'}: ${lights.map((w) => esc(w.name) + (w.mirror ? ' (both sides)' : '')).join(', ')}</div>`
+        : '<div class="muted" style="font-size:12px">Mark a light first: in Windows, draw its outline on the body, set it Open and switch on Lens (the bulb).</div>'
+    }
+    <div class="f">Printed lens<span class="muted" style="font-weight:400;font-size:12px">Fills the opening flush with the body, with a lip behind the wall.</span>
+      <div class="g2">${f('clearance', 'Fit clearance')}${f('lipWidth', 'Lip width')}${f('lip', 'Lip thickness')}${f('wall', 'Body wall')}</div></div>
+    <div class="f">Lens buck<span class="muted" style="font-weight:400;font-size:12px">Vac-form clear sheet over it and glue the lens in from the inside.</span>
+      <div class="g2">${f('sheet', 'Sheet thickness')}${f('allowance', 'Fit allowance')}${f('margin', 'Glue margin', 1)}${f('skirt', 'Skirt', 1)}${f('plinth', 'Plinth', 1)}
+      <span class="fx">Draft${numField('ln-draft', s.draft, '°')}</span>${f('guide', 'Guide line height')}</div></div>
+    <div class="row"><button class="btn primary sm" data-act="lens-make"${lensJob.busy || !lights.length ? ' disabled' : ''}>${icon('bulb')}${lensJob.busy ? 'Making the lenses…' : r ? 'Make them again' : 'Make the lenses'}</button></div>
+    ${lensJob.error ? `<div class="note bad">${esc(lensJob.error)}</div>` : ''}
+    ${stale ? '<div class="note warn">The body or the settings changed since these were made. Make them again before exporting.</div>' : ''}
+    ${
+      r && !stale
+        ? `<div class="f">Show on the car<span class="seg">${[['lens', 'Printed lenses'], ['buck', 'Lens bucks']].map(([k, n]) => `<button data-act="lens-show" data-v="${k}" class="${lensJob.show === k ? 'on' : ''}">${n}</button>`).join('')}</span></div>
+          <div class="note">${r.info.lights.map((l) => `${esc(l.name)}: ${fmtLen(l.size[0], u, 1)} × ${fmtLen(l.size[1], u, 1)}`).join('<br>')}<br>
+            <span class="muted">Buck surface ${fmtLen(r.info.offset, u)} inside the body (wall + sheet + allowance).</span></div>
+          ${r.info.warnings.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
+          <div class="row"><button class="btn sm" data-act="lens-export" data-v="lens">${icon('export')}Export printed lenses</button><button class="btn sm" data-act="lens-export" data-v="buck">${icon('export')}Export lens bucks</button></div>
+          <div class="muted" style="font-size:12px">Print the lenses in clear resin, outside up, and polish or clear-coat them. Print the bucks solid in fine layers and smooth them: layer lines show through the formed sheet.</div>`
         : ''
     }`;
 }
@@ -2977,6 +3053,13 @@ function panelFinal() {
     else if (buck.key !== buckKey()) row('warn', 'Glazing buck', 'Made before the last change: make it again.', 'buck', 'Make it');
     else if (bk.info.warnings.length) row('warn', 'Glazing buck', bk.info.warnings.join('; '), 'buck', 'Look');
     else row('ok', 'Glazing buck', `Ready, glue margin ${fmtLen(buckSettings().margin, u, 1)} everywhere.`);
+    if (lensLights().length) {
+      const lr = lensJob.result;
+      if (!lr) row('warn', 'Light lenses', 'Not made yet.', 'lenses', 'Make them');
+      else if (lensJob.key !== lensKey()) row('warn', 'Light lenses', 'Made before the last change: make them again.', 'lenses', 'Make them');
+      else if (lr.info.warnings.length) row('warn', 'Light lenses', lr.info.warnings.join('; '), 'lenses', 'Look');
+      else row('ok', 'Light lenses', `${lr.info.lights.length} lens${lr.info.lights.length === 1 ? '' : 'es'} ready, printed and as bucks.`);
+    }
   } else row('info', 'Windows', 'No windows drawn: a solid body to paint.', 'windows', 'Draw');
   // Weight and balance
   if (s.volume) {
@@ -2999,7 +3082,7 @@ function panelFinal() {
     <div class="row"><button class="btn primary sm" data-act="export">${icon('export')}Export STL</button>${buck.result ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export buck</button>` : ''}<button class="btn sm ghost" data-act="tool" data-v="variants">${icon('export')}Variants…</button></div>`;
 }
 
-const TOOL_MENU = { panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', fix: 'repair', openings: 'repair', parts: 'repair', solid: 'repair', rebuild: 'repair', symmetry: 'repair', clearance: 'chassis', tabs: 'posts', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck' };
+const TOOL_MENU = { panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', fix: 'repair', openings: 'repair', parts: 'repair', solid: 'repair', rebuild: 'repair', symmetry: 'repair', clearance: 'chassis', tabs: 'posts', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck', lenses: 'buck' };
 
 function stepDetail(step, info) {
   const p = step.params,
@@ -4118,6 +4201,11 @@ const actions = {
     // `open` is kept too, for anything that only knows open or not (the buck).
     setWindows(allWindows().map((w) => (w.id === id ? { ...w, state, open: state === 'open' } : w)));
   },
+  'win-lens'(id) {
+    // A name Anvil gave follows: Windscreen becomes Headlight, and back.
+    const auto = /^(Windscreen|Rear window|Side window|Headlight|Taillight)( d+)?$/;
+    setWindows(allWindows().map((w) => (w.id === id ? { ...w, lens: !w.lens, name: auto.test(w.name) ? windowName(w.normal, !w.lens, w.id) : w.name } : w)));
+  },
   'win-mirror'(id) {
     setWindows(allWindows().map((w) => (w.id === id ? { ...w, mirror: !w.mirror } : w)));
   },
@@ -4126,6 +4214,19 @@ const actions = {
     setWindows(allWindows().filter((w) => w.id !== id));
   },
   'buck-make': () => makeBuckNow(),
+  'lens-make': () => makeLensesNow(),
+  'lens-show'(v) {
+    lensJob.show = v;
+    renderPanel();
+  },
+  'lens-export'(kind) {
+    const r = lensJob.result;
+    if (!r || lensJob.key !== lensKey()) return;
+    const m = kind === 'buck' ? r.print.plugs : r.print.lenses;
+    const what = kind === 'buck' ? 'lens bucks' : 'lenses';
+    download(fileName('stl').replace(/\.stl$/, ` ${what}.stl`), encodeSTL(m, `SlotForge Anvil · ${what} · ${project.name}`), 'model/stl');
+    toast(kind === 'buck' ? 'Lens bucks exported. Print them solid and smooth them before forming.' : 'Lenses exported, outside up. Print them in clear resin.');
+  },
   'buck-export'() {
     const r = buck.result;
     if (!r) return;
@@ -4407,6 +4508,13 @@ document.addEventListener('change', (e) => {
     const step = windowsStep();
     if (step && v > 0) commit(() => (step.params = { ...step.params, [f === 'win-pane' ? 'pane' : 'recess']: round(v, 3) }));
     return;
+  }
+  if (f.startsWith('ln-')) {
+    const key = f.slice(3);
+    const raw = Number(e.target.value);
+    const v = key === 'draft' ? raw : fromUnits(raw, project.units);
+    if (!Number.isFinite(v) || v < 0 || (key === 'wall' && v === 0)) return renderPanel();
+    return setLensSetting(key, round(v, 3));
   }
   if (f.startsWith('bk-')) {
     const key = f.slice(3);
@@ -4868,6 +4976,7 @@ if (devOpen) {
           chassis: saved.chassis ?? null,
           chassisMesh: saved.chassisMesh ?? null,
           buck: saved.buck ?? null,
+          lenses: saved.lenses ?? null,
           variants: saved.variants ?? [],
           parts: saved.parts ?? {},
           protect: saved.protect !== false,

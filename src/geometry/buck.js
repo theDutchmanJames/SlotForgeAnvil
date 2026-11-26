@@ -330,7 +330,7 @@ function signedVolume(p, t) {
 
 // A thin closed tube along a closed line: a raised guide line once it sits
 // half in the buck's surface.
-function tube(points, radius, sides = 6) {
+export function tube(points, radius, sides = 6) {
   // Even spacing, so the rings do not bunch up.
   const pts = [];
   const spacing = Math.max(radius * 1.5, 0.2);
