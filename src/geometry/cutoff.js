@@ -327,12 +327,14 @@ function splitOff(sp, gone, frames, opts, info) {
   const extra = [[], []]; // pins and glue tabs, as their own closed pieces, per side
   let pins = 0,
     glued = 0;
+  const done = new Map();
   frames.forEach((fr, k) => {
     const cl = [cutLoops(pieces[0], fr, k), cutLoops(pieces[1], fr, k)];
     if (!cl[0].loops.length && !cl[1].loops.length) return;
-    // Glue tabs, on the open cut of their piece.
-    const g = cutTabs(sp, pieces, fr, k, o.glue, o.base);
+    // Glue tabs, on the open cut of their piece (mirrored copies: mirrored exactly).
+    const g = cutTabs(sp, pieces, fr, k, o.glue, o.base, done);
     if (g) {
+      done.set(k, g);
       extra[g.side].push(...g.pieces);
       glued += g.placed.length;
       warnings.push(...g.warnings);
@@ -462,15 +464,32 @@ function splitOff(sp, gone, frames, opts, info) {
 
 // Glue tabs on cut k: on the body (side 0) or the part (side 1), with the
 // cut's normal turned to point from that piece to the other.
-function cutTabs(sp, pieces, fr, k, glue, base = Infinity) {
-  let tabs = (glue?.tabs ?? []).filter((t) => (t.k ?? 0) === k);
-  // A mirrored copy of a cut gets the tabs of its own cut (mirroring runs the edge the other way).
-  if (!tabs.length && k >= base) tabs = (glue?.tabs ?? []).filter((t) => (t.k ?? 0) === k - base).map((t) => ({ ...t, s: 1 - t.s }));
+// done: the tabs already made, by cut: a mirrored copy of a cut (k >= base)
+// with no tabs of its own gets those of its cut, mirrored over the centre
+// line exactly.
+function cutTabs(sp, pieces, fr, k, glue, base = Infinity, done = null) {
+  const tabs = (glue?.tabs ?? []).filter((t) => (t.k ?? 0) === k);
+  if (!tabs.length && k >= base) {
+    const src = done?.get(k - base);
+    return src ? mirrorTabs(src) : null;
+  }
   if (!tabs.length) return null;
   const side = glue.on === 'part' ? 1 : 0;
   const n = side ? fr.n.map((x) => -x) : fr.n;
   const g = glueTabs(pieces[side].mesh, { positions: sp.positions, indices: sp.indices }, { c: fr.c, n, u: fr.u, v: fr.v }, tabs, glue);
   return { side, ...g, warnings: g.warnings.map((w) => (k > 0 ? `Cut ${k + 1}: ${w}` : w)) };
+}
+
+// The same tabs on the other side of the centre line (Y = 0): mirrored, and
+// turned round so they still face out.
+function mirrorTabs(g) {
+  const flip = (m) => {
+    const pos = Array.from(m.positions, (v, n) => (n % 3 === 1 ? -v : v));
+    const idx = Array.from(m.indices);
+    for (let f = 0; f < idx.length; f += 3) [idx[f + 1], idx[f + 2]] = [idx[f + 2], idx[f + 1]];
+    return { positions: pos, indices: idx };
+  };
+  return { ...g, pieces: g.pieces.map(flip), placed: g.placed.map((p) => ({ ...p, at: [p.at[0], -p.at[1], p.at[2]] })), warnings: [] };
 }
 
 // For the view: where the glue tabs of a split go (blocks to draw), before it is made.
@@ -479,9 +498,11 @@ export function splitTabPreview(mesh, params) {
     const { frames, sp, gone } = plan(mesh, params);
     const pieces = [piece(sp, gone, 0), piece(sp, gone, 1)];
     const out = { pieces: [], placed: [], warnings: [] };
+    const done = new Map();
     frames.forEach((fr, k) => {
-      const g = cutTabs(sp, pieces, fr, k, params.split?.glue, params.cuts.length);
+      const g = cutTabs(sp, pieces, fr, k, params.split?.glue, params.cuts.length, done);
       if (!g) return;
+      done.set(k, g);
       out.pieces.push(...g.pieces);
       out.placed.push(...g.placed.map((p) => ({ ...p, k })));
       out.warnings.push(...g.warnings);

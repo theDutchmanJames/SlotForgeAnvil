@@ -41,6 +41,23 @@ test('glue tabs: added to the slice, as closed pieces moving with their half', (
   assert.ok(Math.abs(low - (50.3 + 10 - 4)) < 1e-3, `strip reaches ${low}`);
 });
 
+test('glue tabs: the mirrored copy of a cut gets the same tabs, exactly mirrored', async () => {
+  const { splitTabPreview } = await import('../src/geometry/cutoff.js');
+  // The back right corner cut off on a slant; the back left one as its mirror.
+  const cut = { at: [93.1, 13.1, 15.2], normal: [Math.SQRT1_2, Math.SQRT1_2, 0], up: [0, 0, 1], w: 40, h: 24 };
+  for (const s of [0.2, 0.8]) {
+    const params = { cuts: [cut], mirror: true, split: { count: 0, gap: 5, glue: { on: 'body', tabs: [{ s, k: 0 }], width: 3, reach: 2, thick: 0.6, clearance: 0.1 } } };
+    const pv = splitTabPreview(shell(), params);
+    assert.equal(pv.placed.length, 2);
+    const [a, b] = pv.placed;
+    assert.ok(Math.hypot(a.at[0] - b.at[0], a.at[1] + b.at[1], a.at[2] - b.at[2]) < 1e-9);
+    const out = applyCutoff(shell(), params);
+    assert.equal(out.info.glue, 2);
+    assert.equal(meshStats(out).openEdges, meshStats(shell()).openEdges);
+    assert.equal(meshStats(out).faultyEdges, 0);
+  }
+});
+
 test('glue tabs: a solid part has no inside edge, and says so', () => {
   const b = box(40, 40, 20, 6);
   const out = applyCutoff(b, { cuts: [{ at: [20, 20, 17.3], normal: [0, 0, 1], up: [1, 0, 0], w: 60, h: 60 }], split: { count: 0, glue: { tabs: spreadTabs(2) } } });

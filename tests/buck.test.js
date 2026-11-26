@@ -9,7 +9,7 @@ import { readSTLMesh } from '../src/geometry/stl-mesh.js';
 import { shell } from './shapes.js';
 import { model } from './models.js';
 
-// The shell is 100 Ã— 40 Ã— 30 with a 1 mm wall: outside y Â±20, roof at 30.
+// The shell is 100 × 40 × 30 with a 1 mm wall: outside y ±20, roof at 30.
 const opts = { wall: 1, sheet: 0.5, allowance: 0.1, trim: { front: 15, rear: 15 }, skirt: 3, plinth: 2, draft: 0, guide: 0 };
 
 test('the buck sits wall + sheet + allowance inside the body, from the trim line up', () => {

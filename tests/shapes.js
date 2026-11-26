@@ -27,7 +27,7 @@ export function box(sx, sy, sz, n = 8) {
   face([sx, 0, 0], [0, sy, 0], [0, 0, sz]);
   return { positions: Float32Array.from(pos), indices: Uint32Array.from(idx) };
 }
-// A 100 Ã— 40 Ã— 30 shell, 1 mm wall, open underneath, centred on Y = 0.
+// A 100 × 40 × 30 shell, 1 mm wall, open underneath, centred on Y = 0.
 export const shell = () => {
   const b = box(100, 40, 30, 16);
   for (let i = 1; i < b.positions.length; i += 3) b.positions[i] -= 20;
