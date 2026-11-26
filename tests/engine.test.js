@@ -155,11 +155,31 @@ test('test car Main3.stl: import, orient and statistics', { skip: !existsSync(MA
 const CARS = [
   // Already straight; front was guessed backwards before the "nose is lower" rule.
   { file: model('datsun.stl'), triangles: 23082, front: '-y', up: '+z', turn: 0, size: [100, 46, 30] },
-  // Sits about 14 degrees off straight in the file.
-  { file: model('Corvette_Stingray.stl'), triangles: 517806, front: '-y', up: '+z', turnNear: -13.8, size: [46, 20, 11] },
+  // Straight in the file, nose along +x.
+  { file: model('McLaren_MP4_12C.stl'), triangles: 21376, front: '+x', up: '+z', turn: 0, size: [141, 62, 13] },
 ];
+// A car that sits off straight in its file: the McLaren, turned in plan.
+for (const deg of [14, -14]) {
+  test(`test car McLaren turned ${deg} degrees: the guess turns it straight`, { skip: !existsSync(CARS[1].file) }, () => {
+    const mesh = readSTLMesh(readFileSync(CARS[1].file));
+    const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+    const p = mesh.positions.slice();
+    for (let i = 0; i < p.length; i += 3) {
+      const x = p[i], y = p[i + 1];
+      p[i] = c * x - s * y;
+      p[i + 1] = s * x + c * y;
+    }
+    const turned = { positions: p, indices: mesh.indices };
+    const guess = guessOrient(turned);
+    assert.equal(guess.front, '+x');
+    assert.ok(Math.abs(guess.turn + deg) <= 1, `turn ${guess.turn}`);
+    const { mesh: oriented } = replay(turned, [{ id: 'o', type: 'orient', enabled: true, params: guess }]);
+    const size = bounds(oriented.positions).size;
+    assert.ok(Math.abs(size[0] - 141) < 1.5 && Math.abs(size[1] - 61.5) < 1.5, `size ${size.map(Math.round)}`);
+  });
+}
 for (const car of CARS) {
-  test(`test car ${car.file.split('/').pop()}: orientation guess`, { skip: !existsSync(car.file) }, () => {
+  test(`test car ${car.file.split(/[\\/]/).pop()}: orientation guess`, { skip: !existsSync(car.file) }, () => {
     const mesh = readSTLMesh(readFileSync(car.file));
     assert.equal(mesh.indices.length / 3, car.triangles);
     const guess = guessOrient(mesh);

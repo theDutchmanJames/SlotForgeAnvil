@@ -143,7 +143,7 @@ test('reduce keeps a flat surface flat and its outline in place', () => {
 // James's test cars: never part of Anvil, only used when present.
 const CARS = {
   datsun: model('datsun.stl'),
-  vette: model('Corvette_Stingray.stl'),
+  mclaren: model('McLaren_MP4_12C.stl'),
   main3: model('Main3.stl'),
 };
 test('test car Datsun: the light fix clears its faults without moving the surface', { skip: !existsSync(CARS.datsun) }, () => {
@@ -153,17 +153,31 @@ test('test car Datsun: the light fix clears its faults without moving the surfac
   assert.equal(meshStats(r).faultyEdges, 0);
   assert.deepEqual(bounds(r.positions), bounds(m.positions));
 });
-test('test car Corvette: the light fix clears faults and specks; reduce thins it', { skip: !existsSync(CARS.vette) }, () => {
-  const m = readSTLMesh(readFileSync(CARS.vette));
-  const c = checkModel(m);
+test('test car McLaren with faults added: the light fix clears them and the specks; reduce thins it', { skip: !existsSync(CARS.mclaren) }, () => {
+  const m = readSTLMesh(readFileSync(CARS.mclaren));
+  const triangles = m.indices.length / 3;
+  // The file is clean: add doubled faces, collapsed ones and loose specks.
+  const P = Array.from(m.positions), I = Array.from(m.indices);
+  for (let f = 0; f < 30; f++) I.push(I[f * 3], I[f * 3 + 1], I[f * 3 + 2]);
+  for (let f = 100; f < 110; f++) I.push(I[f * 3], I[f * 3], I[f * 3 + 1]);
+  for (let k = 0; k < 6; k++) {
+    const b = P.length / 3;
+    P.push(k * 5, 80, 0, k * 5 + 0.3, 80, 0, k * 5, 80.3, 0, k * 5, 80, 0.3);
+    I.push(b, b + 2, b + 1, b, b + 1, b + 3, b, b + 3, b + 2, b + 1, b + 2, b + 3);
+  }
+  const bad = { positions: Float32Array.from(P), indices: Uint32Array.from(I) };
+  const c = checkModel(bad);
   assert.ok(c.specks >= 5, `specks ${c.specks}`);
   assert.ok(c.collapsed + c.doubled > 0);
-  const r = applyRepair(m, {});
+  const r = applyRepair(bad, {});
   const s = meshStats(r);
   assert.equal(s.faultyEdges, 0);
+  assert.equal(s.openEdges, 0);
   assert.equal(s.parts, 1);
+  assert.equal(s.triangles, triangles, 'back to the clean car');
+  // Already lean, so it thins less than a heavy file would.
   const red = applyReduce(r, { target: 0.3, tolerance: 0.02 });
-  assert.ok(red.indices.length / 3 < s.triangles * 0.5, `kept ${red.indices.length / 3}`);
+  assert.ok(red.indices.length / 3 < s.triangles * 0.8, `kept ${red.indices.length / 3}`);
 });
 test('test car Main3: check says shell with about 3 mm walls', { skip: !existsSync(CARS.main3) }, () => {
   const c = checkModel(readSTLMesh(readFileSync(CARS.main3)));
