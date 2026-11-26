@@ -52,26 +52,41 @@ export function applyRebuild(mesh, { cell }) {
   return { positions: kept.positions, indices: kept.indices, info: { cell, made: before, triangles: kept.indices.length / 3, specks: kept.specks } };
 }
 
-// Where the four corners of a grid square go inside, outside, inside,
-// outside, the new surface would share an edge between four triangles. Fill
-// such squares in (the space only grows, so this ends).
+// A grid cell where the inside corners (or the outside ones) fall apart into
+// more than one group along the cell's edges holds two sheets of surface
+// through one point: alternating corners round a face (an edge shared by four
+// triangles) or two opposite corners of the cell (a pinch). Such cells are
+// filled in (the space only grows, so this ends). SPLIT[mask] says which
+// corner patterns do that.
+const CELL_EDGES = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
+const SPLIT = (() => {
+  const groups = (mask, want) => {
+    const root = [0, 1, 2, 3, 4, 5, 6, 7];
+    const find = (a) => (root[a] === a ? a : (root[a] = find(root[a])));
+    for (const [a, b] of CELL_EDGES) if (((mask >> a) & 1) === want && ((mask >> b) & 1) === want) root[find(a)] = find(b);
+    const set = new Set();
+    for (let k = 0; k < 8; k++) if (((mask >> k) & 1) === want) set.add(find(k));
+    return set.size;
+  };
+  const t = new Uint8Array(256);
+  for (let m = 0; m < 256; m++) t[m] = groups(m, 1) > 1 || groups(m, 0) > 1 ? 1 : 0;
+  return t;
+})();
+
 function wellComposed(s, [nx, ny, nz]) {
   const sx = 1, sy = nx, sz = nx * ny;
-  for (let round = 0; round < 20; round++) {
+  const offs = [0, sx, sy, sx + sy, sz, sx + sz, sy + sz, sx + sy + sz];
+  for (let round = 0; round < 30; round++) {
     let changed = 0;
-    for (let z = 0; z < nz; z++)
-      for (let y = 0; y < ny; y++)
-        for (let x = 0; x < nx; x++) {
+    for (let z = 0; z + 1 < nz; z++)
+      for (let y = 0; y + 1 < ny; y++)
+        for (let x = 0; x + 1 < nx; x++) {
           const p = x + nx * (y + ny * z);
-          // The three squares that have this point as their lowest corner.
-          for (const [du, dv, ok] of [[sx, sy, x + 1 < nx && y + 1 < ny], [sy, sz, y + 1 < ny && z + 1 < nz], [sz, sx, z + 1 < nz && x + 1 < nx]]) {
-            if (!ok) continue;
-            const a = s[p], b = s[p + du], c = s[p + du + dv], d = s[p + dv];
-            if (a === c && b === d && a !== b) {
-              s[p] = s[p + du] = s[p + du + dv] = s[p + dv] = 1;
-              changed++;
-            }
-          }
+          let mask = 0;
+          for (let k = 0; k < 8; k++) if (s[p + offs[k]]) mask |= 1 << k;
+          if (!SPLIT[mask]) continue;
+          for (let k = 0; k < 8; k++) s[p + offs[k]] = 1;
+          changed++;
         }
     if (!changed) return;
   }

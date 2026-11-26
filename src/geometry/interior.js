@@ -7,6 +7,7 @@ import { bounds } from './bounds.js';
 import { prism } from './mounts.js';
 import { revolve } from './posts.js';
 import { rayCaster } from './rays.js';
+import { joinMeshes } from './topology.js';
 
 export const INTERIOR_DEFAULTS = { thick: 1, gap: 0.3, mount: 'ledges', driver: true, side: 'left', seat: 0.55, helmet: 7, wheel: true };
 
@@ -136,15 +137,7 @@ export function interiorPieces(mesh, params) {
   return { tray, ledges, warnings, outline: t.outline, joined };
 }
 
-const join = (list) => {
-  const pos = [], idx = [];
-  for (const m of list) {
-    const off = pos.length / 3;
-    pos.push(...m.positions);
-    for (const v of m.indices) idx.push(v + off);
-  }
-  return { positions: pos, indices: idx };
-};
+const join = joinMeshes;
 
 // params: { x0, x1, z, thick, gap, mount: 'ledges' | 'joined', driver,
 // side, seat, helmet, wheel }. Clip-in: the tray (with its driver) is set

@@ -326,6 +326,23 @@ export function boundaryLoops(indices, twins) {
   return loops;
 }
 
+// Several meshes as one (their corners renumbered). Works on any size: no
+// spreading of big arrays into a call.
+export function joinMeshes(list) {
+  let nv = 0, ni = 0;
+  for (const m of list) (nv += m.positions.length), (ni += m.indices.length);
+  const positions = new Float32Array(nv), indices = new Uint32Array(ni);
+  let pv = 0, pi = 0;
+  for (const m of list) {
+    const base = pv / 3;
+    positions.set(m.positions, pv);
+    for (let i = 0; i < m.indices.length; i++) indices[pi + i] = m.indices[i] + base;
+    pv += m.positions.length;
+    pi += m.indices.length;
+  }
+  return { positions, indices };
+}
+
 export function loopLength(positions, loop) {
   let s = 0;
   for (let i = 0; i < loop.length; i++) {

@@ -277,7 +277,15 @@ async function startProject(p, alreadyLoaded = false, panel = 'home') {
   partsShown = null;
   viewport.setExtras(null);
   ui.slice.at = ui.slice.pivot = null;
-  Object.assign(ui.cutoff, { cuts: [], active: 0, editingId: null });
+  ui.slice.glue = null;
+  Object.assign(ui.cutoff, { cuts: [], active: 0, editingId: null, split: null, splitLast: null });
+  // Settings tied to the last model's places and sizes start over.
+  ui.interior = ui.interiorFor = ui.interiorTouched = null;
+  ui.tabs = ui.tabsFor = null;
+  ui.sym = ui.symFor = null;
+  ui.plines = ui.plinesFor = null;
+  ui.text = null;
+  ui.solid = null;
   ui.scale.length = null;
   ui.scale.from = null;
   setPointer('look');
@@ -725,7 +733,7 @@ const stepWarnings = (step) => (result.results.find((r) => r.id === step.id)?.in
 
 function cutoffParams() {
   const s = ui.cutoff;
-  return { cuts: structuredClone(s.cuts), ...(s.mirror ? { mirror: true } : {}), ...(s.split ? { split: { ...s.split } } : s.open ? { open: true } : {}) };
+  return { cuts: structuredClone(s.cuts), ...(s.mirror ? { mirror: true } : {}), ...(s.split ? { split: structuredClone(s.split) } : s.open ? { open: true } : {}) };
 }
 
 // What the cut would take off, worked out on the model shown. Kept until
@@ -1119,11 +1127,12 @@ function symOptions(editing) {
     ui.symFor = editing.id;
     ui.sym = { keep: editing.params.keep, at: editing.params.at };
   }
-  if (!editing) ui.symFor = null;
   return ui.sym;
 }
 
 function panelSymmetry(editing) {
+  // Only the panel lets go of a step it was editing (buttons call symOptions() too).
+  if (!editing) ui.symFor = null;
   const o = symOptions(editing),
     u = project.units;
   const r = editing ? null : lookup('symmetry');
@@ -1778,9 +1787,14 @@ function thinTo(p) {
   return round(Math.max(min, hollowStep().params.wall - p.depth * 1.5 - 0.1), 2);
 }
 
-function panelClearance() {
+function panelClearance(editing) {
   const c = project.chassis,
     u = project.units;
+  // A Guide room step opened from the list: what it does, and the way back.
+  if (editing?.type === 'guidecut')
+    return `${head('Guide room', `This step cuts a round notch for the guide, ${fmtLen(editing.params.r, u, 1)} round, under the nose.`)}
+      <div class="note">To change it, set the guide room under Chassis › Clearance and cut room for the guide again: this step is updated.</div>
+      <div class="row"><button class="btn ghost sm" data-act="stop-edit">Done</button></div>`;
   if (!c)
     return `${head('Clearance', 'Checks that the body clears the tyres, the guide and the chassis.')}<div class="note warn">Set up a chassis first.</div>
       <button class="btn sm" data-act="tool" data-v="chassis">${icon('ghost')}Chassis</button>`;
@@ -2067,7 +2081,6 @@ function lineOptions(editing) {
     ui.plinesFor = editing.id;
     Object.assign(ui.plines, { depth: editing.params.depth, radius: editing.params.radius, min: editing.params.min, onlySel: !!editing.params.faces });
   }
-  if (!editing) ui.plinesFor = null;
   return ui.plines;
 }
 
@@ -2092,6 +2105,7 @@ function groovesNow() {
 }
 
 function panelLines(editing) {
+  if (!editing) ui.plinesFor = null;
   const o = lineOptions(editing),
     u = project.units;
   const g = editing ? null : groovesNow();
@@ -2112,7 +2126,8 @@ function textOptions() {
   ui.text ??= { value: '23', font: TEXT_FONTS[0], height: round(result.stats.bounds.size[2] * 0.25, 1), depth: 0.4, mode: 'raise', angle: 0 };
   return ui.text;
 }
-const textStep = () => project.steps.find((s) => s.type === 'text' && s.enabled) ?? null;
+// The Text step to change, even while it is switched off.
+const textStep = () => project.steps.find((s) => s.type === 'text') ?? null;
 const currentTexts = () => textStep()?.params.texts ?? [];
 function setTexts(texts) {
   commit(() => {
@@ -2186,7 +2201,7 @@ function panelVariants() {
   return `${head('Variants', 'Other versions of this body, exported in one go: at another scale (1:32 → 1:24) and with or without parts such as the wing or the interior. Each comes out as its own STL file.')}
     ${vs.map(card).join('')}
     <div class="row"><button class="btn sm" data-act="var-add">${icon('plus')}Add a variant</button></div>
-    ${scaled ? `<div class="muted" style="font-size:12px">At another scale the body grows or shrinks with every place you set, while the wall, posts, tabs, pins, holes, LED sockets, panel line depth and text height stay their real size.${project.chassis ? ' The chassis grows with it: a real chassis at that scale will differ, so check it fits.' : ''}</div>` : ''}
+    ${scaled ? `<div class="muted" style="font-size:12px">At another scale the body grows or shrinks with every place you set, while the wall, posts, tabs, pins, holes, LED sockets, panel line depth and text height stay their real size.${project.chassis ? ' Posts and tabs stay where they are on the body: check they suit your chassis at that scale.' : ''}</div>` : ''}
     <div class="row"><button class="btn primary sm" data-act="var-export"${vs.length && !ui.varBusy ? '' : ' disabled'}>${icon('export')}${ui.varBusy ? 'Exporting…' : `Export ${vs.length} variant${vs.length === 1 ? '' : 's'}`}</button></div>`;
 }
 
@@ -2218,7 +2233,8 @@ function lightOptions() {
   ui.light ??= { size: 'led3', ...LIGHT_DEFAULTS };
   return ui.light;
 }
-const lightsStep = () => project.steps.find((s) => s.type === 'lights' && s.enabled) ?? null;
+// The LED lights step to change, even while it is switched off.
+const lightsStep = () => project.steps.find((s) => s.type === 'lights') ?? null;
 const currentLights = () => lightsStep()?.params.lights ?? [];
 function setLights(lights) {
   commit(() => {
@@ -2269,16 +2285,18 @@ function interiorDefaults() {
   const L = b.size[0], H = b.size[2];
   const x0 = a?.length === 2 ? a[0].x + a[0].width / 2 + 2 : b.min[0] + L * 0.35;
   const x1 = a?.length === 2 ? a[1].x - a[1].width / 2 - 2 : b.min[0] + L * 0.7;
-  return { ...INTERIOR_DEFAULTS, x0: round(x0, 2), x1: round(x1, 2), z: round(b.min[2] + H * 0.3, 2), helmet: round(H * 0.22, 1) };
+  return { ...INTERIOR_DEFAULTS, x0: round(x0, 2), x1: round(x1, 2), z: round(b.min[2] + H * 0.3, 2), helmet: round(H * 0.22, 1), byArches: a?.length === 2 };
 }
 
 function interiorOptions(editing) {
   if (editing && ui.interiorFor !== editing.id) {
     ui.interiorFor = editing.id;
     ui.interior = { ...INTERIOR_DEFAULTS, ...structuredClone(editing.params) };
+    ui.interiorTouched = true;
   }
-  if (!editing) ui.interiorFor = null;
   ui.interior ??= interiorDefaults();
+  // Started before the arches were found, not changed since: start again between them.
+  if (!editing && !ui.interiorTouched && !ui.interior.byArches && lookups.arches.token === buildToken && lookups.arches.value?.arches?.length === 2) ui.interior = interiorDefaults();
   return ui.interior;
 }
 
@@ -2301,9 +2319,11 @@ function interiorNow() {
 }
 
 function panelInterior(editing) {
+  if (!editing) ui.interiorFor = null;
+  // The arches first: the tray starts between them.
+  lookup('arches');
   const o = interiorOptions(editing),
     u = project.units;
-  lookup('arches');
   const pv = editing ? null : interiorNow();
   const nose = result.stats.bounds.min[0];
   const f = (key, label, v = o[key], unit = u) => `<span class="fx">${label}${numField(`in-${key}`, unit === '%' ? Math.round(v * 100) : round(toUnits(v, u), 2), unit)}</span>`;
@@ -2329,7 +2349,9 @@ function panelInterior(editing) {
 function tabsStep() {
   return project.steps.find((s) => s.type === 'mounts' && s.enabled) ?? null;
 }
-const currentTabs = () => tabsStep()?.params.tabs ?? [];
+// The Tabs step to change, even while it is switched off.
+const anyTabsStep = () => project.steps.find((s) => s.type === 'mounts') ?? null;
+const currentTabs = () => anyTabsStep()?.params.tabs ?? [];
 
 // The chassis edge the clips hook under: just inside the tyres, and the
 // underside of the chassis plate. Typed over when the chassis differs.
@@ -2345,9 +2367,11 @@ function tabDefaults() {
 
 function tabOptions() {
   ui.tabs ??= { kind: 'screw', screw: { ...TAB_DEFAULTS.screw }, clip: { ...TAB_DEFAULTS.clip }, edge: null, catchZ: null };
-  const s = tabsStep();
-  if (s && ui.tabsFor !== s.id) {
-    ui.tabsFor = s.id;
+  const s = anyTabsStep();
+  // Follow the step's sizes when they change from outside the panel (undo, redo).
+  const key = s && JSON.stringify([s.id, s.params.screw, s.params.clip, s.params.edge, s.params.catchZ]);
+  if (s && ui.tabsFor !== key) {
+    ui.tabsFor = key;
     Object.assign(ui.tabs, { screw: { ...TAB_DEFAULTS.screw, ...s.params.screw }, clip: { ...TAB_DEFAULTS.clip, ...s.params.clip }, edge: s.params.edge, catchZ: s.params.catchZ });
   }
   return ui.tabs;
@@ -2361,13 +2385,13 @@ function tabParams(tabs) {
 
 function setTabs(tabs) {
   commit(() => {
-    const step = tabsStep();
+    const step = anyTabsStep();
     if (!tabs.length && step) project.steps = project.steps.filter((s) => s !== step);
     else if (step) step.params = tabParams(tabs);
     else if (tabs.length) project.steps.push({ id: newId(), type: 'mounts', enabled: true, params: tabParams(tabs) });
   });
 }
-const refreshTabs = () => (tabsStep() ? setTabs(currentTabs()) : renderPanel());
+const refreshTabs = () => (anyTabsStep() ? setTabs(currentTabs()) : renderPanel());
 
 function placeTab(hit) {
   const o = tabOptions();
@@ -2385,7 +2409,7 @@ function panelTabs(editing) {
   const o = tabOptions(),
     u = project.units,
     d = tabDefaults();
-  const step = editing ?? tabsStep();
+  const step = editing ?? anyTabsStep();
   const tabs = step?.params.tabs ?? [];
   const info = step && result.results.find((r) => r.id === step.id);
   const hollow = project.steps.some((s) => s.type === 'hollow' && s.enabled);
@@ -2443,7 +2467,7 @@ function setWindows(windows) {
       if (at < 0) project.steps.push(step);
       else project.steps.splice(at, 0, step);
     }
-    step.params = { windows, depth: step.params.depth ?? cutDepth() };
+    step.params = { windows, depth: step.params.depth ?? cutDepth(), fine: true };
   });
 }
 
@@ -3551,7 +3575,11 @@ const actions = {
     applyGuide();
   },
   'cut-remove'() {
-    ui.cutoff.cuts.splice(ui.cutoff.active, 1);
+    const gone = ui.cutoff.active;
+    ui.cutoff.cuts.splice(gone, 1);
+    // Glue tabs on that plane go with it; those on later planes move up a number.
+    const g = ui.cutoff.split?.glue;
+    if (g) g.tabs = g.tabs.filter((t) => (t.k ?? 0) !== gone).map((t) => ((t.k ?? 0) > gone ? { ...t, k: t.k - 1 } : t));
     ui.cutoff.active = Math.max(0, ui.cutoff.active - 1);
     renderPanel();
     applyGuide();
@@ -3707,10 +3735,12 @@ const actions = {
   },
   'in-mount'(v) {
     interiorOptions().mount = v;
+    ui.interiorTouched = true;
     renderPanel();
   },
   'in-side'(v) {
     interiorOptions().side = v;
+    ui.interiorTouched = true;
     renderPanel();
   },
   'in-apply'() {
@@ -3928,7 +3958,7 @@ const actions = {
     const o = archOptions();
     const which = v ? [v] : ['front', 'rear'].filter((k) => o[k]);
     if (!which.length) return;
-    addBeforeHollow('arches', { cuts: which.map((k) => archCircle(k, o.gap)), which });
+    addBeforeHollow('arches', { cuts: which.map((k) => archCircle(k, o.gap)), which, fine: true });
   },
   'clear-arch'(v) {
     ui.editStep = null;
@@ -3941,10 +3971,16 @@ const actions = {
     if (!c) return;
     const g = guideZone(c, groundZ()),
       gap = clearGap();
+    const params = { x: round(g.x, 3), y: 0, r: round(g.r + gap, 3), top: round(g.top + gap, 3) };
+    // One guide room: an existing step is updated, not joined by a second.
+    const existing = project.steps.find((s) => s.type === 'guidecut');
+    if (existing) commit(() => (existing.params = params));
+    else {
+      ui.editStep = null;
+      addBeforeHollow('guidecut', params);
+    }
     ui.editStep = null;
-    addBeforeHollow('guidecut', { x: round(g.x, 3), y: 0, r: round(g.r + gap, 3), top: round(g.top + gap, 3) });
-    ui.editStep = null;
-    toast('Cut room for the guide.');
+    toast(existing ? 'Updated the room for the guide.' : 'Cut room for the guide.');
   },
   'clear-thin'(key) {
     const p = clearanceNow().parts.find((x) => x.key === key);
@@ -4483,6 +4519,7 @@ document.addEventListener('change', (e) => {
     return renderPanel();
   } else if (f.startsWith('in-')) {
     const o = interiorOptions();
+    ui.interiorTouched = true;
     const key = f.slice(3);
     if (key === 'driver' || key === 'wheel') o[key] = e.target.checked;
     else {

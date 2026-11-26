@@ -52,7 +52,7 @@ test('floor line on a solid body still opens the underside for Hollow', () => {
 
 test('wheel arches cut through a shell close the wall round the cut', () => {
   const s = applyFloor(closedShell(), { mode: 'cut', at: 5 });
-  const out = applyArchCut(s, { cuts: [{ x: 25.3, z: 5, r: 10 }, { x: 75.3, z: 5, r: 10 }] });
+  const out = applyArchCut(s, { cuts: [{ x: 25.3, z: 5, r: 10 }, { x: 75.3, z: 5, r: 10 }], fine: true });
   const st = meshStats(out);
   assert.equal(st.openEdges, 0);
   assert.equal(st.faultyEdges, 0);

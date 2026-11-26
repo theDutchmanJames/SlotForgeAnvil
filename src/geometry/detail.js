@@ -33,7 +33,9 @@ export function refine(mesh, split, rounds = 12) {
   const P = (v) => [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]];
   for (let r = 0; r < rounds; r++) {
     const mid = new Map();
-    const key = (a, b) => (a < b ? a * 4194304 + b : b * 4194304 + a);
+    // A number per edge, unique for any model size (corners this round are all below V).
+    const V = pos.length / 3;
+    const key = (a, b) => (a < b ? a * V + b : b * V + a);
     let any = false;
     for (let i = 0; i < tri.length; i += 3) {
       const A = P(tri[i]), B = P(tri[i + 1]), C = P(tri[i + 2]);

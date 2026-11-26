@@ -176,15 +176,27 @@ function splitChassis(out, P, T, hit, depth, parts) {
     g.vs.push(v);
     for (let k = 0; k < 3; k++) g.c[k] += P[v * 3 + k];
   }
-  const spots = [...groups.values()]
-    .filter((g) => g.n >= 2)
-    .sort((a, b) => b.n - a.n)
-    .slice(0, 8)
-    .map((g, i) => {
-      const at = g.c.map((x) => x / g.n);
-      let radius = 0;
-      for (const v of g.vs) radius = Math.max(radius, Math.hypot(P[v * 3] - at[0], P[v * 3 + 1] - at[1], P[v * 3 + 2] - at[2]));
-      return { ...entry, key: `chassis-${i}`, label: i ? `Chassis, spot ${i + 1}` : 'Chassis', corners: g.n, depth: g.d, at, radius };
-    });
+  // Every spot counts, a lone corner too. The eight biggest are listed one by
+  // one; any more are listed together, so none is ever left out.
+  const groupsBySize = [...groups.values()].sort((a, b) => b.n - a.n);
+  const listed = groupsBySize.slice(0, 8);
+  const rest = groupsBySize.slice(8);
+  if (rest.length) {
+    const m = { n: 0, d: 0, c: [0, 0, 0], vs: [] };
+    for (const g of rest) {
+      m.n += g.n;
+      m.d = Math.max(m.d, g.d);
+      m.vs.push(...g.vs);
+      for (let k = 0; k < 3; k++) m.c[k] += g.c[k];
+    }
+    listed.push(Object.assign(m, { more: rest.length }));
+  }
+  const spots = listed.map((g, i) => {
+    const at = g.c.map((x) => x / g.n);
+    let radius = 0;
+    for (const v of g.vs) radius = Math.max(radius, Math.hypot(P[v * 3] - at[0], P[v * 3 + 1] - at[1], P[v * 3 + 2] - at[2]));
+    const label = g.more ? `Chassis, ${g.more} more spots` : i ? `Chassis, spot ${i + 1}` : 'Chassis';
+    return { ...entry, key: `chassis-${i}`, label, corners: g.n, depth: g.d, at, radius };
+  });
   return [...out.filter((p) => p.key !== 'chassis'), ...spots];
 }

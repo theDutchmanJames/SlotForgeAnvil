@@ -94,13 +94,14 @@ function solve3(M, r) {
 
 // params: { windows: [{ id, name, points, corners, normal, mirror, open }], depth }
 //   depth: how far behind the outline the cut reaches (wall + room to spare)
-export function applyWindows(mesh, { windows = [], depth = 3 }) {
+// fine: see clip (on for windows drawn now, off for those saved before).
+export function applyWindows(mesh, { windows = [], depth = 3, fine = false }) {
   let m = mesh;
   const report = [];
   for (const o of windowOutlines(windows.filter((w) => w.open !== false))) {
     const name = `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}`;
     const c = cutter(o.points, o.normal, depth);
-    const out = clip(m, c.f);
+    const out = clip(m, c.f, fine);
     if (!out.removed) {
       report.push({ name, text: 'The outline is not on the body' });
       continue;

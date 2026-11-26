@@ -103,7 +103,10 @@ export function applyMounts(mesh, { tabs = [], screw = {}, clip = {}, base, edge
       if (!Number.isFinite(base)) throw Error('Set the height of the screw tabs.');
       // The wall at the middle of the tab's thickness, and at both ends.
       const zm = base + s.thick / 2;
-      const ws = [t.x - s.width / 2, t.x, t.x + s.width / 2].map((x) => wallAt(cast, x, zm, side));
+      // The wall all along the tab: its outer edge follows it, so the tab
+      // holds on everywhere and never shows through where the wall turns in.
+      const xs = Array.from({ length: 7 }, (_, i) => t.x - s.width / 2 + (s.width * i) / 6);
+      const ws = xs.map((x) => wallAt(cast, x, zm, side));
       if (ws.some((w) => w == null)) {
         warnings.push(`No side wall next to this screw tab (${where(t)})`);
         continue;
@@ -112,8 +115,7 @@ export function applyMounts(mesh, { tabs = [], screw = {}, clip = {}, base, edge
       const inner = wall - s.reach;
       if (inner < 0.5) warnings.push(`This screw tab reaches past the centre line (${where(t)})`);
       // Outline in (along the car, out from the centre line); the hole in the middle of the reach.
-      const out = Math.max(...ws) + OVERLAP;
-      const rect = [[t.x - s.width / 2, inner], [t.x + s.width / 2, inner], [t.x + s.width / 2, out], [t.x - s.width / 2, out]];
+      const rect = [[xs[0], inner], [xs[6], inner], ...xs.map((x, i) => [x, ws[i] + OVERLAP]).reverse()];
       const hole = s.hole > 0 ? [circle(t.x, inner + s.reach / 2, s.hole / 2)] : [];
       if (s.hole > 0 && s.reach / 2 - s.hole / 2 < 0.8) warnings.push(`Little material round the screw hole (${where(t)})`);
       add(prism(rect, hole, base, base + s.thick, (u, v, a) => [u, side * v, a]));
@@ -138,12 +140,14 @@ export function applyMounts(mesh, { tabs = [], screw = {}, clip = {}, base, edge
       let missing = false;
       for (let i = 0; i <= steps; i++) {
         const z = zt - ((zt - zb) * i) / steps;
-        const w = [t.x - k.width / 2, t.x + k.width / 2].map((x) => wallAt(cast, x, z, side));
+        const w = [t.x - k.width / 2, t.x, t.x + k.width / 2].map((x) => wallAt(cast, x, z, side));
         if (w.some((v) => v == null)) {
           missing = true;
           break;
         }
-        outer.push([Math.max(...w) + OVERLAP, z]);
+        // The clip is the same all along its width: into the wall where the
+        // wall is nearest, so it never shows through where the wall turns in.
+        outer.push([Math.min(...w) + OVERLAP, z]);
       }
       if (missing) {
         warnings.push(`No side wall next to this clip all the way down (${where(t)})`);

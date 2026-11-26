@@ -4,6 +4,7 @@
 import { Vector2 } from 'three';
 import { bounds } from './bounds.js';
 import { capLoops } from './finish.js';
+import { rayCaster } from './rays.js';
 import { boundaryLoops, pairEdges } from './topology.js';
 
 // ------------------------------------------------------------ stretch
@@ -57,14 +58,14 @@ function blend(s) {
 // radius r), keeping the rest. Where the cut goes through a shell's wall, the
 // wall is closed along the cut so it stays solid between its skins; a solid
 // body's cut stays open for Hollow, which closes it with the new wall.
-export function applyArchCut(mesh, { cuts, closeWalls = true }) {
+export function applyArchCut(mesh, { cuts, closeWalls = true, fine = false }) {
   let m = mesh;
   let removed = 0,
     walls = 0;
   for (const c of cuts ?? []) {
     if (!(c.r > 0) || !Number.isFinite(c.x) || !Number.isFinite(c.z)) throw Error('An arch cut is damaged. Remove the step and cut again.');
     const inside = (x, z) => c.r * c.r - ((x - c.x) ** 2 + (z - c.z) ** 2); // > 0 inside
-    const out = clip(m, (p) => inside(p[0], p[2])); // keep where inside <= 0: outside the circle
+    const out = clip(m, (p) => inside(p[0], p[2]), fine); // keep where inside <= 0: outside the circle
     removed += out.removed;
     m = out;
     if (closeWalls && out.removed) {
@@ -91,7 +92,27 @@ function closeCylinderCut(mesh, c) {
     if (a < -Math.PI / 2) a += 2 * Math.PI;
     return new Vector2(a * c.r, P[v * 3 + 1]);
   };
-  return capLoops(mesh, loops, flatten, true);
+  const first = capLoops(mesh, loops, flatten, true);
+  // A cut that ends inside the wall (only the inner skin cut through) leaves
+  // an opening that is neither a strip nor a ring: close it too when the
+  // outer skin is right behind it. A solid body's cut stays open for Hollow.
+  const m = first.mesh;
+  const Q = m.positions;
+  const left = boundaryLoops(m.indices, pairEdges(m.indices, Q.length / 3, Q).twins).filter((l) => l.every((v) => Math.abs(Math.hypot(Q[v * 3] - c.x, Q[v * 3 + 2] - c.z) - c.r) < tol));
+  if (!left.length) return first;
+  const cast = rayCaster(Q, m.indices);
+  const inWall = left.filter((l) => {
+    const mid = [0, 1, 2].map((k) => l.reduce((s, v) => s + Q[v * 3 + k], 0) / l.length);
+    const out = [mid[0] - c.x, 0, mid[2] - c.z];
+    const len = Math.hypot(out[0], out[2]) || 1;
+    const dir = [out[0] / len, 0, out[2] / len];
+    // From the cut, outwards (away from the axle): the outer skin, close by?
+    const start = [c.x + dir[0] * c.r, mid[1], c.z + dir[2] * c.r].map((x, k) => x + dir[k] * 1e-3);
+    return cast(start, dir) < 4;
+  });
+  if (!inWall.length) return first;
+  const second = capLoops(m, inWall, flatten, false);
+  return { mesh: second.mesh, capped: first.capped + second.capped };
 }
 
 // Room for the guide: remove the body inside a round zone round the guide
@@ -132,7 +153,45 @@ function closeCupCut(mesh, { x, y, r, top }) {
     const out = r + (top - z);
     return new Vector2((dx / d) * out, (dy / d) * out);
   };
-  return capLoops(mesh, loops, flatten, true);
+  const first = capLoops(mesh, loops, flatten, true);
+  // An opening left only in the inner skin (the zone's top lies inside the
+  // wall): a pocket straight up from its edge to the top, with a flat roof.
+  let m = first.mesh;
+  const Q0 = m.positions;
+  const left = boundaryLoops(m.indices, pairEdges(m.indices, Q0.length / 3, Q0).twins).filter((l) =>
+    l.every((v) => {
+      const d = Math.hypot(Q0[v * 3] - x, Q0[v * 3 + 1] - y), z = Q0[v * 3 + 2];
+      return (Math.abs(d - r) < tol && z <= top + tol) || (Math.abs(z - top) < tol && d <= r + tol);
+    }),
+  );
+  let capped = first.capped;
+  for (const loop of left) {
+    m = pocketUp(m, loop, top);
+    capped++;
+  }
+  return { mesh: m, capped };
+}
+
+// A pocket from an opening's edge straight up to height `top`, roofed flat.
+function pocketUp(mesh, loop, top) {
+  const pos = Array.from(mesh.positions), idx = Array.from(mesh.indices);
+  const used = new Set();
+  for (let f = 0; f < idx.length; f += 3) for (let e = 0; e < 3; e++) used.add(`${idx[f + e]}>${idx[f + ((e + 1) % 3)]}`);
+  const forward = used.has(`${loop[0]}>${loop[1]}`);
+  const roof = loop.map((v) => {
+    const id = pos.length / 3;
+    pos.push(pos[v * 3], pos[v * 3 + 1], top);
+    return id;
+  });
+  const mid = pos.length / 3;
+  pos.push(loop.reduce((s, v) => s + pos[v * 3], 0) / loop.length, loop.reduce((s, v) => s + pos[v * 3 + 1], 0) / loop.length, top);
+  for (let i = 0; i < loop.length; i++) {
+    const j = (i + 1) % loop.length;
+    let [p, q, pr, qr] = [loop[i], loop[j], roof[i], roof[j]];
+    if (!forward) [p, q, pr, qr] = [q, p, qr, pr];
+    idx.push(q, p, pr, q, pr, qr, mid, qr, pr);
+  }
+  return { positions: Float32Array.from(pos), indices: Uint32Array.from(idx) };
 }
 
 // A long edge can run right through the region a cut removes with both its
@@ -200,10 +259,13 @@ function refineFor(mesh, f, rounds = 8) {
 
 // Keep the part of the mesh where f(p) <= 0. Triangles crossing the surface
 // f = 0 are clipped, with the crossing found along each edge by bisection.
-export function clip(mesh, f) {
-  ({ positions: mesh.positions, indices: mesh.indices } = refineFor(mesh, f));
-  const p = mesh.positions,
-    idx = mesh.indices;
+// fine: split long edges that pass through the region first (see refineFor).
+// Steps saved before that existed leave it off, so they build as they did.
+// The mesh given is never changed.
+export function clip(mesh, f, fine = true) {
+  const src = fine ? refineFor(mesh, f) : mesh;
+  const p = src.positions,
+    idx = src.indices;
   const V = p.length / 3;
   const val = new Float64Array(V);
   for (let v = 0; v < V; v++) val[v] = f([p[v * 3], p[v * 3 + 1], p[v * 3 + 2]]);

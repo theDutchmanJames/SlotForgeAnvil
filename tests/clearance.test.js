@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkClearance, guideZone } from '../src/geometry/clearance.js';
-import { applyGuideCut } from '../src/geometry/arches.js';
+import { applyArchCut, applyGuideCut } from '../src/geometry/arches.js';
 import { meshStats } from '../src/geometry/engine.js';
 import { applyFloor } from '../src/geometry/shell.js';
-import { box } from './shapes.js';
+import { box, shell } from './shapes.js';
 
 // A 100 × 40 × 20 block standing 1 mm above the track, centred on Y = 0.
 function body() {
@@ -55,6 +55,21 @@ test('clearance: a chassis STL inside the body is found; corners near posts are 
   assert.ok(c.depth > 1.5 && c.depth < 2.6, `depth ${c.depth}`);
   const skipped = checkClearance(body(), chassis(), 0, { gap: 0.3, mesh: motor, skip: (x) => x > 45 && x < 75 });
   assert.equal(skipped.parts.length, 0);
+});
+
+test('cuts ending inside the wall are closed, and a cut never changes the mesh it is given', () => {
+  // The test shell's roof: inner skin at z = 29, outer at 30.
+  const s = shell();
+  const before = s.positions.length;
+  const g = applyGuideCut(s, { x: 50.2, y: 0.1, r: 6, top: 29.5 });
+  assert.equal(s.positions.length, before, 'the input is left alone');
+  assert.equal(meshStats(g).openEdges, meshStats(shell()).openEdges, 'guide top inside the roof: closed');
+  assert.equal(meshStats(g).faultyEdges, 0);
+  // An arch whose top ends inside the roof.
+  const a = applyArchCut(s, { cuts: [{ x: 50.2, z: 10, r: 19.5 }], fine: true });
+  assert.equal(meshStats(a).openEdges, meshStats(shell()).openEdges, 'arch top inside the roof: closed');
+  assert.equal(meshStats(a).faultyEdges, 0);
+  assert.equal(s.positions.length, before);
 });
 
 test('guide cut: the room for the guide is cut and a shell wall is closed round it', () => {

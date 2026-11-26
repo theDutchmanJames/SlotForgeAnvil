@@ -12,7 +12,7 @@ import { capLoops } from './finish.js';
 import { prism } from './mounts.js';
 import { glueTabs } from './gluetabs.js';
 import { rayCaster } from './rays.js';
-import { boundaryLoops, pairEdges, partsOf } from './topology.js';
+import { boundaryLoops, joinMeshes, pairEdges, partsOf } from './topology.js';
 
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -456,14 +456,8 @@ function splitOff(sp, gone, frames, opts, info) {
     return { positions: pin.positions.map((x, n) => x + off[best][n % 3]), indices: pin.indices };
   });
   // All together: the body, its pins, the part and its pins.
-  const all = [pieces[0].mesh, ...extra[0], { positions: P1, indices: part.indices }, ...partPins];
-  const pos = [], idx = [];
-  for (const m of all) {
-    const base = pos.length / 3;
-    pos.push(...m.positions);
-    for (const v of m.indices) idx.push(v + base);
-  }
-  return { positions: Float32Array.from(pos), indices: Uint32Array.from(idx), info: { ...info, split: true, pins, glue: glued, warnings } };
+  const all = joinMeshes([pieces[0].mesh, ...extra[0], { positions: P1, indices: part.indices }, ...partPins]);
+  return { ...all, info: { ...info, split: true, pins, glue: glued, warnings } };
 }
 
 // Glue tabs on cut k: on the body (side 0) or the part (side 1), with the
