@@ -85,3 +85,33 @@ test('slice: a closed cut through a shell is a ring', () => {
   assert.equal(meshStats(out).openEdges, 0);
   assert.equal(out.info.capped, 1);
 });
+
+test('closing a cut with a small outline inside that runs its own way round (not a hole)', async () => {
+  const { capPlane } = await import('../src/geometry/finish.js');
+  // Open-topped tubes ending at z = 10: an outer wall, a hole in it (turned
+  // round, as a hollow's inner skin), and a small island running the outer's
+  // way, as where a hollowed body's skins pass through each other.
+  const pos = [], idx = [];
+  const tube = (x0, y0, x1, y1, flip) => {
+    const ring = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    const b = pos.length / 3;
+    for (const z of [0, 10]) for (const [x, y] of ring) pos.push(x, y, z);
+    const tri = (p, q, r) => (flip ? idx.push(p, r, q) : idx.push(p, q, r));
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4;
+      tri(b + i, b + j, b + 4 + j);
+      tri(b + i, b + 4 + j, b + 4 + i);
+    }
+    tri(b, b + 2, b + 1);
+    tri(b, b + 3, b + 2);
+  };
+  tube(0, 0, 20, 10, false);
+  tube(2, 2, 8, 8, true);
+  tube(12, 4, 14, 6, false);
+  tube(9, 6, 7.5, 4, false); // crosses the hole's edge, first corner outside it
+  const m = { positions: Float32Array.from(pos), indices: Uint32Array.from(idx) };
+  assert.equal(meshStats(m).openEdges, 16);
+  const st = meshStats(capPlane(m, 'z', 10).mesh);
+  assert.equal(st.openEdges, 0);
+  assert.equal(st.faultyEdges, 0);
+});

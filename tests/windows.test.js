@@ -59,6 +59,33 @@ test('a solid window is only an outline, and close windows warn about the pillar
   assert.equal(windowOutlines([side()]).length, 2);
 });
 
+test('a recessed window sinks the glass by its depth, sharp at the outline; the body stays closed', () => {
+  const body = shell();
+  const out = applyWindows(body, { windows: [side(30.3, 60.3, { state: 'recess' })], recess: 0.3 });
+  assert.deepEqual(out.info.warnings, []);
+  assert.equal(out.info.recessed, 2);
+  const s = meshStats(out);
+  assert.equal(s.openEdges, meshStats(body).openEdges);
+  assert.equal(s.faultyEdges, 0);
+  // 30 × 12 of glass, 0.3 deep, on both sides.
+  const dv = volume(body) - volume(out);
+  assert.ok(Math.abs(dv - 2 * 30 * 12 * 0.3) < 4, `volume less by ${dv}`);
+});
+
+test('a filled window closes an opening the model came with: a pane as thick as the wall', () => {
+  const body = shell();
+  // The opening the model "came with": cut first, then filled with the same outline.
+  const cut = applyWindows(body, { windows: [side()], depth: 3 });
+  const filled = applyWindows(cut, { windows: [side(30, 60, { state: 'fill' })], pane: 1 });
+  assert.equal(filled.info.filled, 2);
+  const s = meshStats(filled);
+  assert.equal(s.openEdges, 0);
+  assert.equal(s.faultyEdges, 0);
+  // The panes give back what the openings took: 30 × 12 × 1, twice.
+  const back = volume(filled) - volume(cut);
+  assert.ok(Math.abs(back - 2 * 30 * 12) < 8, `panes add ${back}`);
+});
+
 test('a window drawn on a solid body warns that it needs hollowing', () => {
   const solid = applyFloor(box(100, 40, 30, 16), { mode: 'cut', at: 0.5 });
   for (let i = 1; i < solid.positions.length; i += 3) solid.positions[i] -= 20;

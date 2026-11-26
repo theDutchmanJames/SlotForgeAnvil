@@ -47,7 +47,7 @@ import {
 import { POST_TYPES, checkPostType, fitTestPiece, loosePost } from './geometry/posts.js';
 import { TAB_DEFAULTS } from './geometry/mounts.js';
 import { REBUILD_DETAIL, rebuildCell } from './geometry/rebuild.js';
-import { pillarWarnings, windowOutlines } from './geometry/windows.js';
+import { pillarWarnings, windowOutlines, windowState } from './geometry/windows.js';
 import { sampleClosedCurve } from './geometry/curve.js';
 import { BUCK_DEFAULTS } from './geometry/buck.js';
 import {
@@ -381,7 +381,6 @@ const MENUS = [
     id: 'windows',
     name: 'Windows',
     tools: [['windows', 'window', 'Windows'], ['lights', 'bulb', 'LED lights']],
-    later: [['Close window', 'Fills an opening the model came with. Comes later.'], ['Recessed window', 'Sinks a painted window a fraction. Comes later.']],
   },
   { id: 'posts', name: 'Posts', tools: [['posts', 'post', 'Posts'], ['tabs', 'tab', 'Tabs'], ['posteditor', 'wrench', 'Post editor']] },
   { id: 'buck', name: 'Buck', tools: [['buck', 'buck', 'Window buck']] },
@@ -2467,7 +2466,7 @@ function setWindows(windows) {
       if (at < 0) project.steps.push(step);
       else project.steps.splice(at, 0, step);
     }
-    step.params = { windows, depth: step.params.depth ?? cutDepth(), fine: true };
+    step.params = { windows, depth: step.params.depth ?? cutDepth(), fine: true, pane: step.params.pane ?? round(hollowWall() ?? 1, 3), recess: step.params.recess ?? 0.3 };
   });
 }
 
@@ -2502,7 +2501,7 @@ function drawWindows(show) {
   const list = [];
   for (const o of windowOutlines(allWindows(), 0.4)) {
     if (act && o.window.id === act.id && !o.mirrored) continue;
-    list.push({ points: o.points, closed: true, color: o.window.open !== false ? 0xf2b705 : 0x6fb6ff });
+    list.push({ points: o.points, closed: true, color: { open: 0xf2b705, solid: 0x6fb6ff, fill: 0x5fd38d, recess: 0xc58cf2 }[windowState(o.window)] });
   }
   if (act) {
     const pts = act.points.length >= 3 && !ui.win.draft ? sampleClosedCurve(act.points, act.corners, 0.4) : act.points;
@@ -2534,13 +2533,19 @@ function panelWindows(editing) {
   const rows = wins
     .map(
       (w) => `<div class="prow${ui.win.editing === w.id ? ' cur' : ''}"><span><b>${esc(w.name)}</b><small>${w.points.length} points${w.mirror ? ' · both sides' : ''}</small></span>
-        <span class="seg"><button data-act="win-state" data-v="${w.id}|open" class="${w.open !== false ? 'on' : ''}">Open</button><button data-act="win-state" data-v="${w.id}|solid" class="${w.open === false ? 'on' : ''}">Solid</button></span>
+        <span class="seg">${[['open', 'Open', 'Cut through the wall'], ['solid', 'Solid', 'Only an outline, for the buck'], ['fill', 'Close', 'Fill an opening the model came with'], ['recess', 'Recessed', 'Sink the glass a little, for a crisp painted window']].map(([k, n, t]) => `<button data-act="win-state" data-v="${w.id}|${k}" class="${windowState(w) === k ? 'on' : ''}" title="${t}">${n}</button>`).join('')}</span>
         <button class="btn sm icon ghost" data-act="win-mirror" data-v="${w.id}" title="${w.mirror ? 'Only this side' : 'Both sides'}">${icon('mirror')}</button>
         <button class="btn sm icon ghost" data-act="win-edit" data-v="${w.id}" title="Change the outline">${icon('line')}</button>
         <button class="btn sm icon ghost" data-act="win-delete" data-v="${w.id}" title="Remove this window">${icon('trash')}</button></div>`,
     )
     .join('');
-  return `${head('Windows', 'Each window is an outline on the body. Open windows are cut through the wall; solid ones stay closed and only mark the window on the buck.')}
+  const states = new Set(wins.map(windowState));
+  const sizes = [
+    states.has('fill') ? `<span class="fx">Closed window's pane${numField('win-pane', round(toUnits(step.params.pane ?? hollowWall() ?? 1, u), 2), u)}</span>` : '',
+    states.has('recess') ? `<span class="fx">Recessed windows sink${numField('win-recess', round(toUnits(step.params.recess ?? 0.3, u), 2), u)}</span>` : '',
+  ].join('');
+  return `${head('Windows', 'Each window is an outline on the body. Open: cut through the wall. Solid: only marked (for the buck). Close: a pane fills an opening the model came with (draw round the opening on its frame). Recessed: the glass sinks a little, so a painted window gets a crisp edge.')}
+    ${sizes ? `<div class="g2">${sizes}</div>` : ''}
     ${hollow ? '' : '<div class="muted" style="font-size:12px">Open windows cut through a shell wall. If the body is still solid, run Shell › Hollow first.</div>'}
     ${tool}
     ${wins.length ? `<div class="f">${wins.length} window${wins.length === 1 ? '' : 's'}<div class="plist">${rows}</div></div>` : ''}
@@ -3037,7 +3042,7 @@ function stepDetail(step, info) {
     return `${p.faces ? `${runCount(p.faces).toLocaleString()} selected triangles` : `${p.strokes.length} brush spot${p.strokes.length === 1 ? '' : 's'}`} · strength ${p.strength}${p.protect ? ' · inside only' : ''}`;
   if (step.type === 'addpart') return `${esc(p.name)} · ${p.join ? 'joined' : 'its own print'}${p.place?.pair ? ' · a pair' : ''}`;
   if (step.type === 'windows')
-    return `${p.windows.length} window${p.windows.length === 1 ? '' : 's'}${info ? ` · ${info.cut} cut` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
+    return `${p.windows.length} window${p.windows.length === 1 ? '' : 's'}${info ? ` · ${info.cut} cut` : ''}${info?.filled ? ` · ${info.filled} closed` : ''}${info?.recessed ? ` · ${info.recessed} recessed` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
   if (step.type === 'posts')
     return `${p.posts.length} × ${p.type?.name ?? 'post'}${p.length > 0 ? `, ${fmtLen(p.length, u, 1)} long` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
   if (step.type === 'lights') return `${p.lights.length} LED${p.lights.length === 1 ? '' : 's'}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
@@ -4110,7 +4115,8 @@ const actions = {
   },
   'win-state'(v) {
     const [id, state] = v.split('|');
-    setWindows(allWindows().map((w) => (w.id === id ? { ...w, open: state === 'open' } : w)));
+    // `open` is kept too, for anything that only knows open or not (the buck).
+    setWindows(allWindows().map((w) => (w.id === id ? { ...w, state, open: state === 'open' } : w)));
   },
   'win-mirror'(id) {
     setWindows(allWindows().map((w) => (w.id === id ? { ...w, mirror: !w.mirror } : w)));
@@ -4394,6 +4400,12 @@ document.addEventListener('change', (e) => {
     const v = fromUnits(Number(e.target.value), project.units);
     const step = windowsStep();
     if (step && v > 0) commit(() => (step.params = { ...step.params, depth: round(v, 3) }));
+    return;
+  }
+  if (f === 'win-pane' || f === 'win-recess') {
+    const v = fromUnits(Number(e.target.value), project.units);
+    const step = windowsStep();
+    if (step && v > 0) commit(() => (step.params = { ...step.params, [f === 'win-pane' ? 'pane' : 'recess']: round(v, 3) }));
     return;
   }
   if (f.startsWith('bk-')) {

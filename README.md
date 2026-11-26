@@ -91,7 +91,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 
 ### Windows and glazing
 
-- **Windows:** draw each window with the line tool; a smooth line runs through your points. Open windows are cut through the wall with a clean edge; side windows are mirrored.
+- **Windows:** draw each window with the line tool; a smooth line runs through your points. Open windows are cut through the wall with a clean edge; side windows are mirrored. A window can also close an opening the model came with (a pane as thick as the wall, drawn round the opening on its frame), or be recessed: the glass sinks a fraction so a painted window gets a crisp edge.
 - **Window buck:** one plug for the whole cabin to vac-form a glazing insert that is glued in from the inside, with a trim line, glue margin and raised guide lines.
 
 ### Shape and finish

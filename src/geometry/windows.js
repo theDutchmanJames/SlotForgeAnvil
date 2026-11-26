@@ -5,7 +5,9 @@
 // Car frame: X along (front low), Y across (centre line 0), Z up.
 import { clip } from './arches.js';
 import { mirrorPoint, sampleClosedCurve } from './curve.js';
-import { boundaryLoops, pairEdges } from './topology.js';
+import { applyText } from './detail.js';
+import { fillLoop } from './fill.js';
+import { boundaryLoops, joinMeshes, pairEdges } from './topology.js';
 
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -92,13 +94,42 @@ function solve3(M, r) {
   return [0, 1, 2].map((k) => d3(col(k)) / det);
 }
 
-// params: { windows: [{ id, name, points, corners, normal, mirror, open }], depth }
-//   depth: how far behind the outline the cut reaches (wall + room to spare)
+// What a window does. Saved before `state` existed: open, or solid (open: false).
+//   open:   cut through the wall
+//   solid:  only an outline (for the buck)
+//   fill:   close an opening the model came with: a pane in the outline
+//   recess: sink the glass a fraction, for a crisp painted window
+export const windowState = (w) => w.state ?? (w.open === false ? 'solid' : 'open');
+
+// params: { windows: [{ id, name, points, corners, normal, mirror, state }], depth, pane, recess }
+//   depth:  how far behind the outline the cut reaches (wall + room to spare)
+//   pane:   how thick a filled window's pane is
+//   recess: how far a recessed window sinks
 // fine: see clip (on for windows drawn now, off for those saved before).
-export function applyWindows(mesh, { windows = [], depth = 3, fine = false }) {
+export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane = 1, recess = 0.3 }) {
   let m = mesh;
   const report = [];
-  for (const o of windowOutlines(windows.filter((w) => w.open !== false))) {
+  // Recessed windows: the outside within the outline moves in, like cut-in text.
+  const sunk = windowOutlines(windows.filter((w) => windowState(w) === 'recess'));
+  if (sunk.length) {
+    if (!(recess > 0)) throw Error('Enter how far the recessed windows sink.');
+    const texts = sunk.map((o) => {
+      const c = cutter(o.points, o.normal, depth);
+      const mid = o.points.reduce((s, p) => [s[0] + p[0], s[1] + p[1], s[2] + p[2]], [0, 0, 0]).map((x) => x / o.points.length);
+      // The outline in the text frame: across (u) and up (v), round the middle, facing out (-d).
+      const up = cross(norm(c.d.map((x) => -x)), c.u);
+      const polys = [o.points.map((p) => [dot([p[0] - mid[0], p[1] - mid[1], p[2] - mid[2]], c.u), dot([p[0] - mid[0], p[1] - mid[1], p[2] - mid[2]], up)])];
+      return { at: mid, normal: c.d.map((x) => -x), up, polys, mode: 'cut', depth: recess, name: `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}` };
+    });
+    const out = applyText(m, { texts, grain: 1.5 });
+    m = out;
+    // applyText says "Text n is not on the body": name the window instead.
+    for (const w of out.info.warnings) {
+      const n = Number(/Text (\d+)/.exec(w)?.[1]);
+      report.push({ name: texts[n - 1]?.name ?? 'A recessed window', text: 'The outline is not on the body' });
+    }
+  }
+  for (const o of windowOutlines(windows.filter((w) => windowState(w) === 'open'))) {
     const name = `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}`;
     const c = cutter(o.points, o.normal, depth);
     const out = clip(m, c.f, fine);
@@ -119,7 +150,47 @@ export function applyWindows(mesh, { windows = [], depth = 3, fine = false }) {
     if (closed.error) report.push({ name, text: closed.error });
     else report.push({ name, ok: true });
   }
-  return { positions: m.positions, indices: m.indices, info: { cut: report.filter((r) => r.ok).length, warnings: report.filter((r) => !r.ok).map((r) => `${r.name}: ${r.text}`) } };
+  // Filled windows: a pane in each outline, joined to the frame round it.
+  const panes = [];
+  for (const o of windowOutlines(windows.filter((w) => windowState(w) === 'fill'))) {
+    if (!(pane > 0)) throw Error('Enter how thick a filled window is.');
+    panes.push(paneIn(o.points, o.normal, pane));
+  }
+  if (panes.length) m = joinMeshes([m, ...panes]);
+  return { positions: m.positions, indices: m.indices, info: { cut: report.filter((r) => r.ok).length, filled: panes.length, recessed: sunk.length, warnings: report.filter((r) => !r.ok).map((r) => `${r.name}: ${r.text}`) } };
+}
+
+// A pane filling a window outline drawn round an opening: its outside is a
+// smooth patch through the outline (so it follows the body's curve), its
+// inside the same set `thick` in (against the window's facing), joined by a
+// band round the edge. The outline lies on the frame, so the pane's edge is
+// built into it and the two print as one.
+function paneIn(points, normal, thick) {
+  const pos = [];
+  for (const p of points) pos.push(p[0], p[1], p[2]);
+  const ring = points.map((_, i) => i);
+  let top = fillLoop(pos, ring, 'smooth');
+  // Facing out along the window's normal.
+  const n0 = norm(normal);
+  let facing = 0;
+  for (const [a, b, c] of top) {
+    const A = [pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2]], B = [pos[b * 3], pos[b * 3 + 1], pos[b * 3 + 2]], C = [pos[c * 3], pos[c * 3 + 1], pos[c * 3 + 2]];
+    facing += dot(cross([B[0] - A[0], B[1] - A[1], B[2] - A[2]], [C[0] - A[0], C[1] - A[1], C[2] - A[2]]), n0);
+  }
+  if (facing < 0) top = top.map(([a, b, c]) => [a, c, b]);
+  // The inside: every corner moved in by the thickness.
+  const V = pos.length / 3;
+  for (let v = 0; v < V; v++) for (let k = 0; k < 3; k++) pos.push(pos[v * 3 + k] - n0[k] * thick);
+  const idx = [];
+  for (const [a, b, c] of top) idx.push(a, b, c, a + V, c + V, b + V);
+  // The band: each outline edge, the way the outside does not run it.
+  const used = new Set(top.flatMap(([a, b, c]) => [`${a}>${b}`, `${b}>${c}`, `${c}>${a}`]));
+  for (let i = 0; i < ring.length; i++) {
+    let p = ring[i], q = ring[(i + 1) % ring.length];
+    if (used.has(`${p}>${q}`)) [p, q] = [q, p];
+    idx.push(p, q, q + V, p, q + V, p + V);
+  }
+  return { positions: Float32Array.from(pos), indices: Uint32Array.from(idx) };
 }
 
 // Close the cut. Every new edge lies on the cutter's side wall, so the wall

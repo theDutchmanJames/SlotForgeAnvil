@@ -199,11 +199,21 @@ export function capLoops(mesh, loops, flatten, walls = false) {
   const P = mesh.positions;
   const V0 = P.length / 3;
   let capped = 0;
-  flat.forEach((outer, n) => {
-    if (depth[n] % 2) return;
-    const holes = flat.map((h, m) => m).filter((m) => depth[m] === depth[n] + 1 && inside(flat[m][0], outer));
+  const claimed = new Set(); // outlines filled, or used as a hole in one
+  // An outline left unclaimed (where outlines cross, the hole test can leave a
+  // small one belonging to none) is filled on its own, as an outline.
+  const order = flat.map((_, n) => n);
+  const pass = (n, own) => {
+    const outer = flat[n];
+    const holes = own ? [] : flat.map((h, m) => m).filter((m) => depth[m] === depth[n] + 1 && inside(flat[m][0], outer));
     if (walls && !holes.length && !thin(outer)) return;
+    claimed.add(n);
+    for (const m of holes) claimed.add(m);
     capped++;
+    fillOne(n, holes);
+  };
+  const fillOne = (n, holes) => {
+    const outer = flat[n];
     const contour = outer, holePts = holes.map((m) => flat[m]);
     const ids = [...loops[n], ...holes.flatMap((m) => loops[m])];
     const tris = keepAllPoints(ShapeUtils.triangulateShape(contour, holePts), [contour.length, ...holePts.map((h) => h.length)]);
@@ -220,6 +230,15 @@ export function capLoops(mesh, loops, flatten, walls = false) {
     // the fallback, turn it to run against the outline, as a hole does.
     const rings = [loops[n], ...holes.map((m) => (Math.sign(area(flat[m])) === want ? [...loops[m]].reverse() : loops[m]))];
     if (closes(mine, rings)) return faces.push(...mine);
+    // Where a hollowed body's skins pass through each other, the cut can leave
+    // small outlines inside the outline that run its own way round: not holes
+    // but patches of their own. Close them apart, and the rest without them.
+    const own = holes.filter((m) => Math.sign(area(flat[m])) === want);
+    if (own.length) {
+      fillOne(n, holes.filter((m) => !own.includes(m)));
+      for (const m of own) fillOne(m, []);
+      return;
+    }
     // An outline that crosses itself (where a hollowed body's skins pass
     // through each other) is not filled whole by the triangulation. Close it
     // in a way that always closes, whatever its shape: wound by the outline's
@@ -231,7 +250,9 @@ export function capLoops(mesh, loops, flatten, walls = false) {
       for (let i = 0; i < ring.length; i++) faces.push(mid, ring[i], ring[(i + 1) % ring.length]);
     } else if (rings.length === 2) faces.push(...zipRings(P, rings[0], rings[1]));
     else faces.push(...mine);
-  });
+  };
+  for (const n of order) if (depth[n] % 2 === 0) pass(n, false);
+  for (const n of order) if (!claimed.has(n)) pass(n, true);
   const idx = new Uint32Array(mesh.indices.length + faces.length);
   idx.set(mesh.indices);
   idx.set(faces, mesh.indices.length);
