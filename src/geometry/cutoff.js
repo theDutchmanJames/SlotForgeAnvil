@@ -9,7 +9,10 @@
 // step stops instead. The cut is closed flat unless open is asked.
 import { Vector2 } from 'three';
 import { capLoops } from './finish.js';
-import { boundaryLoops, pairEdges } from './topology.js';
+import { prism } from './mounts.js';
+import { glueTabs } from './gluetabs.js';
+import { rayCaster } from './rays.js';
+import { boundaryLoops, pairEdges, partsOf } from './topology.js';
 
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -216,16 +219,11 @@ export function cutoffPreview(mesh, params) {
   }
 }
 
-export function applyCutoff(mesh, params) {
-  const { list, frames, sp, gone, share } = plan(mesh, params);
-  if (share > TOO_MUCH) throw Error(tooMuch);
-  // Keep the rest, and drop corners nothing uses.
+// One side of the split model (the faces where gone === side), compacted,
+// with each corner's cut bits.
+function piece(sp, gone, side) {
   const keep = [];
-  let removed = 0;
-  for (let f = 0; f < gone.length; f++)
-    if (gone[f]) removed++;
-    else keep.push(sp.indices[f * 3], sp.indices[f * 3 + 1], sp.indices[f * 3 + 2]);
-  if (!removed) throw Error('Nothing is cut off. Turn the plane round with Flip side.');
+  for (let f = 0; f < gone.length; f++) if (gone[f] === side) keep.push(sp.indices[f * 3], sp.indices[f * 3 + 1], sp.indices[f * 3 + 2]);
   const map = new Int32Array(sp.positions.length / 3).fill(-1);
   let n = 0;
   for (const v of keep) if (map[v] < 0) map[v] = n++;
@@ -236,23 +234,266 @@ export function applyCutoff(mesh, params) {
       P.set(sp.positions.subarray(v * 3, v * 3 + 3), map[v] * 3);
       onCut[map[v]] = sp.onCut.get(v) ?? 0;
     }
-  let mesh2 = { positions: P, indices: Uint32Array.from(keep, (v) => map[v]) };
+  return { mesh: { positions: P, indices: Uint32Array.from(keep, (v) => map[v]) }, onCut };
+}
+
+// The cut's openings in a piece, laid flat in the cut's frame.
+function cutLoops(pc, fr, k) {
+  const P = pc.mesh.positions;
+  const { twins } = pairEdges(pc.mesh.indices, P.length / 3, P);
+  const loops = boundaryLoops(pc.mesh.indices, twins).filter((l) => l.every((v) => pc.onCut[v] & (1 << k)));
+  const flat = (p) => {
+    const r = sub(p, fr.c);
+    return new Vector2(dot(r, fr.u), dot(r, fr.v));
+  };
+  return { loops, flat, flatten: (v) => flat([P[v * 3], P[v * 3 + 1], P[v * 3 + 2]]) };
+}
+
+export const PIN_DEFAULTS = { count: 1, diameter: 1.5, length: 3, clearance: 0.1, on: 'auto', gap: 10 };
+
+export function applyCutoff(mesh, params) {
+  const { list, frames, sp, gone, share } = plan(mesh, params);
+  if (share > TOO_MUCH) throw Error(tooMuch);
+  let removed = 0;
+  for (let f = 0; f < gone.length; f++) removed += gone[f];
+  if (!removed) throw Error('Nothing is cut off. Turn the plane round with Flip side.');
+  const missed = list.filter((l, k) => l.copy && !sp.used[k]).length;
+  if (params.split) return splitOff(sp, gone, frames, { ...params.split, base: params.cuts.length }, { changed: removed, ...(missed ? { missed } : {}) });
+  // Keep the rest, and close the cut.
+  const body = piece(sp, gone, 0);
+  let mesh2 = body.mesh;
   let capped = 0;
   if (!params.open) {
-    const { twins } = pairEdges(mesh2.indices, n, P);
-    const loops = boundaryLoops(mesh2.indices, twins);
     frames.forEach((fr, k) => {
-      const mine = loops.filter((l) => l.every((v) => onCut[v] & (1 << k)));
-      if (!mine.length) return;
-      const flatten = (v) => {
-        const r = sub([P[v * 3], P[v * 3 + 1], P[v * 3 + 2]], fr.c);
-        return new Vector2(dot(r, fr.u), dot(r, fr.v));
-      };
-      const c = capLoops(mesh2, mine, flatten);
+      const { loops, flatten } = cutLoops({ mesh: mesh2, onCut: body.onCut }, fr, k);
+      if (!loops.length) return;
+      const c = capLoops(mesh2, loops, flatten);
       mesh2 = c.mesh;
       capped += c.capped;
     });
   }
-  const missed = list.filter((l, k) => l.copy && !sp.used[k]).length;
   return { ...mesh2, info: { changed: removed, capped, ...(missed ? { missed } : {}) } };
+}
+
+// ------------------------------------------------------------ split off
+
+// Where pins go on a cut face: the points furthest inside it, away from its
+// edges and holes. Returns [{ p: Vector2, room }], best first.
+function pinSpots(polys, count, r) {
+  // polys: the face's outlines (Vector2 rings); a point is inside when inside
+  // an odd number of them.
+  const inside = (p) => {
+    let odd = false;
+    for (const ring of polys)
+      for (let a = 0, b = ring.length - 1; a < ring.length; b = a++)
+        if (ring[a].y > p.y !== ring[b].y > p.y && p.x < ((ring[b].x - ring[a].x) * (p.y - ring[a].y)) / (ring[b].y - ring[a].y) + ring[a].x) odd = !odd;
+    return odd;
+  };
+  const edgeDist = (p) => {
+    let d = Infinity;
+    for (const ring of polys)
+      for (let a = 0, b = ring.length - 1; a < ring.length; b = a++) {
+        const A = ring[b], B = ring[a];
+        const ex = B.x - A.x, ey = B.y - A.y;
+        const t = Math.max(0, Math.min(1, ((p.x - A.x) * ex + (p.y - A.y) * ey) / (ex * ex + ey * ey || 1)));
+        d = Math.min(d, Math.hypot(p.x - A.x - t * ex, p.y - A.y - t * ey));
+      }
+    return d;
+  };
+  let lo = new Vector2(Infinity, Infinity), hi = new Vector2(-Infinity, -Infinity);
+  for (const ring of polys) for (const p of ring) (lo = lo.min(p)), (hi = hi.max(p));
+  const n = 48;
+  const cands = [];
+  for (let i = 0; i <= n; i++)
+    for (let j = 0; j <= n; j++) {
+      const p = new Vector2(lo.x + ((hi.x - lo.x) * i) / n, lo.y + ((hi.y - lo.y) * j) / n);
+      if (inside(p)) cands.push({ p, room: edgeDist(p) });
+    }
+  cands.sort((a, b) => b.room - a.room);
+  const out = [];
+  for (const c of cands) {
+    if (out.length >= count) break;
+    if (out.some((o) => o.p.distanceTo(c.p) < 2 * r + 2 * Math.max(0.8, r))) continue;
+    out.push(c);
+  }
+  return out;
+}
+
+function splitOff(sp, gone, frames, opts, info) {
+  const o = { ...PIN_DEFAULTS, ...opts };
+  const r = o.diameter / 2, rh = r + o.clearance;
+  const warnings = [];
+  const pieces = [piece(sp, gone, 0), piece(sp, gone, 1)]; // body, part
+  const extra = [[], []]; // pins and glue tabs, as their own closed pieces, per side
+  let pins = 0,
+    glued = 0;
+  frames.forEach((fr, k) => {
+    const cl = [cutLoops(pieces[0], fr, k), cutLoops(pieces[1], fr, k)];
+    if (!cl[0].loops.length && !cl[1].loops.length) return;
+    // Glue tabs, on the open cut of their piece.
+    const g = cutTabs(sp, pieces, fr, k, o.glue, o.base);
+    if (g) {
+      extra[g.side].push(...g.pieces);
+      glued += g.placed.length;
+      warnings.push(...g.warnings);
+    }
+    const to3 = (q, a = 0) => fr.c.map((c, i) => c + q.x * fr.u[i] + q.y * fr.v[i] + a * fr.n[i]);
+    // Pins: on the body's face (both faces are the same outline).
+    const polys = cl[0].loops.map((l) => l.map(cl[0].flatten));
+    const spots = o.count > 0 && polys.length ? pinSpots(polys, o.count, rh) : [];
+    const holes = [[], []];
+    for (const s of spots) {
+      if (s.room < rh + 0.6) {
+        warnings.push(`No room for a ${o.diameter} mm pin on cut ${k + 1}: the cut face is only ${(2 * s.room).toFixed(1)} mm across there`);
+        continue;
+      }
+      // Room behind each face for a hole: the body lies against the arrow, the part along it.
+      const room = [0, 1].map((side) => {
+        const cast = rayCaster(pieces[side].mesh.positions, pieces[side].mesh.indices);
+        const dir = side ? fr.n : fr.n.map((x) => -x);
+        const start = to3(s.p).map((c, i) => c + dir[i] * 1e-3);
+        return cast(start, dir);
+      });
+      let holeSide = o.on === 'body' ? 0 : o.on === 'part' ? 1 : room[0] >= room[1] ? 0 : 1;
+      let length = o.length;
+      if (room[holeSide] < length + 0.8) {
+        const fits = room[holeSide] - 0.8;
+        if (fits >= o.diameter) {
+          warnings.push(`Pin on cut ${k + 1} shortened to ${fits.toFixed(1)} mm: no more room behind the hole`);
+          length = fits;
+        } else {
+          warnings.push(`No room for a pin hole on cut ${k + 1}: the ${holeSide ? 'part' : 'body'} is only ${room[holeSide].toFixed(1)} mm deep there`);
+          continue;
+        }
+      }
+      holes[holeSide].push({ p: s.p, depth: length + 0.3 });
+      // The pin on the other side, standing out of its face into the hole.
+      const pinSide = 1 - holeSide;
+      const out = pinSide ? -1 : 1; // the part's pin points against the arrow
+      const ring = Array.from({ length: 24 }, (_, i) => [s.p.x + r * Math.cos((2 * Math.PI * i) / 24), s.p.y + r * Math.sin((2 * Math.PI * i) / 24)]);
+      extra[pinSide].push(prism(ring, [], -0.5 * out, length * out, (u, v, a) => to3(new Vector2(u, v), a)));
+      pins++;
+    }
+    // Close both faces, the holes left open in them, then the bores.
+    for (const side of [0, 1]) {
+      const pc = pieces[side];
+      const { loops, flatten } = cutLoops(pc, fr, k);
+      if (!loops.length) continue;
+      const pos = Array.from(pc.mesh.positions);
+      const rings = [];
+      for (const h of holes[side]) {
+        const ring = [];
+        for (let i = 0; i < 24; i++) {
+          ring.push(pos.length / 3);
+          pos.push(...to3(new Vector2(h.p.x + rh * Math.cos((2 * Math.PI * i) / 24), h.p.y + rh * Math.sin((2 * Math.PI * i) / 24))));
+        }
+        rings.push({ ring, h });
+      }
+      const P = Float32Array.from(pos);
+      const flat2 = (v) => {
+        const r2 = sub([P[v * 3], P[v * 3 + 1], P[v * 3 + 2]], fr.c);
+        return new Vector2(dot(r2, fr.u), dot(r2, fr.v));
+      };
+      const c = capLoops({ positions: P, indices: pc.mesh.indices }, [...loops, ...rings.map((x) => x.ring)], flat2);
+      const idx = Array.from(c.mesh.indices);
+      const cap = new Set();
+      for (let f = pc.mesh.indices.length; f < idx.length; f += 3)
+        for (let e = 0; e < 3; e++) cap.add(`${idx[f + e]}>${idx[f + ((e + 1) % 3)]}`);
+      const into = side ? 1 : -1; // into the piece's material
+      for (const { ring, h } of rings) {
+        // Bottom of the bore, and its wall, running against the face round the hole.
+        const bottom = ring.map((v) => {
+          const id = pos.length / 3;
+          pos.push(P[v * 3] + fr.n[0] * into * h.depth, P[v * 3 + 1] + fr.n[1] * into * h.depth, P[v * 3 + 2] + fr.n[2] * into * h.depth);
+          return id;
+        });
+        const mid = pos.length / 3;
+        pos.push(...to3(h.p, into * h.depth));
+        const forward = cap.has(`${ring[0]}>${ring[1]}`);
+        for (let i = 0; i < ring.length; i++) {
+          const j = (i + 1) % ring.length;
+          let [p, q, pb, qb] = [ring[i], ring[j], bottom[i], bottom[j]];
+          if (!forward) [p, q, pb, qb] = [q, p, qb, pb];
+          idx.push(q, p, pb, q, pb, qb, mid, qb, pb);
+        }
+      }
+      pieces[side] = { mesh: { positions: Float32Array.from(pos), indices: Uint32Array.from(idx) }, onCut: pc.onCut };
+    }
+  });
+  // Move the part away from the body along its cuts, a piece at a time.
+  const part = pieces[1].mesh;
+  const { twins } = pairEdges(part.indices, part.positions.length / 3, part.positions);
+  const { part: comp, sizes } = partsOf(part.indices.length / 3, twins);
+  const dirs = sizes.map(() => [0, 0, 0]);
+  const onCut1 = pieces[1].onCut;
+  for (let f = 0; f < comp.length; f++)
+    for (let e = 0; e < 3; e++) {
+      const v = part.indices[f * 3 + e];
+      const bits = v < onCut1.length ? onCut1[v] : 0;
+      frames.forEach((fr, k) => {
+        if (bits & (1 << k)) for (let i = 0; i < 3; i++) dirs[comp[f]][i] += fr.n[i];
+      });
+    }
+  const off = dirs.map((d) => (unit(d) ?? [0, 0, 0]).map((x) => x * o.gap));
+  const P1 = Float32Array.from(part.positions);
+  const moved = new Uint8Array(P1.length / 3);
+  for (let f = 0; f < comp.length; f++)
+    for (let e = 0; e < 3; e++) {
+      const v = part.indices[f * 3 + e];
+      if (moved[v]) continue;
+      moved[v] = 1;
+      for (let i = 0; i < 3; i++) P1[v * 3 + i] += off[comp[f]][i];
+    }
+  // The part's pins go with the piece nearest them.
+  const partPins = extra[1].map((pin) => {
+    const c = [0, 1, 2].map((i) => pin.positions.filter((_, n) => n % 3 === i).reduce((s, x) => s + x, 0) / (pin.positions.length / 3));
+    let best = 0, bd = Infinity;
+    for (let f = 0; f < comp.length; f++) {
+      const v = part.indices[f * 3];
+      const d = Math.hypot(part.positions[v * 3] - c[0], part.positions[v * 3 + 1] - c[1], part.positions[v * 3 + 2] - c[2]);
+      if (d < bd) (bd = d), (best = comp[f]);
+    }
+    return { positions: pin.positions.map((x, n) => x + off[best][n % 3]), indices: pin.indices };
+  });
+  // All together: the body, its pins, the part and its pins.
+  const all = [pieces[0].mesh, ...extra[0], { positions: P1, indices: part.indices }, ...partPins];
+  const pos = [], idx = [];
+  for (const m of all) {
+    const base = pos.length / 3;
+    pos.push(...m.positions);
+    for (const v of m.indices) idx.push(v + base);
+  }
+  return { positions: Float32Array.from(pos), indices: Uint32Array.from(idx), info: { ...info, split: true, pins, glue: glued, warnings } };
+}
+
+// Glue tabs on cut k: on the body (side 0) or the part (side 1), with the
+// cut's normal turned to point from that piece to the other.
+function cutTabs(sp, pieces, fr, k, glue, base = Infinity) {
+  let tabs = (glue?.tabs ?? []).filter((t) => (t.k ?? 0) === k);
+  // A mirrored copy of a cut gets the tabs of its own cut (mirroring runs the edge the other way).
+  if (!tabs.length && k >= base) tabs = (glue?.tabs ?? []).filter((t) => (t.k ?? 0) === k - base).map((t) => ({ ...t, s: 1 - t.s }));
+  if (!tabs.length) return null;
+  const side = glue.on === 'part' ? 1 : 0;
+  const n = side ? fr.n.map((x) => -x) : fr.n;
+  const g = glueTabs(pieces[side].mesh, { positions: sp.positions, indices: sp.indices }, { c: fr.c, n, u: fr.u, v: fr.v }, tabs, glue);
+  return { side, ...g, warnings: g.warnings.map((w) => (k > 0 ? `Cut ${k + 1}: ${w}` : w)) };
+}
+
+// For the view: where the glue tabs of a split go (blocks to draw), before it is made.
+export function splitTabPreview(mesh, params) {
+  try {
+    const { frames, sp, gone } = plan(mesh, params);
+    const pieces = [piece(sp, gone, 0), piece(sp, gone, 1)];
+    const out = { pieces: [], placed: [], warnings: [] };
+    frames.forEach((fr, k) => {
+      const g = cutTabs(sp, pieces, fr, k, params.split?.glue, params.cuts.length);
+      if (!g) return;
+      out.pieces.push(...g.pieces);
+      out.placed.push(...g.placed.map((p) => ({ ...p, k })));
+      out.warnings.push(...g.warnings);
+    });
+    return out;
+  } catch (e) {
+    return { pieces: [], placed: [], warnings: [e.message] };
+  }
 }

@@ -57,6 +57,8 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 - **Open any STL:** drop it on the window or use Open. Anvil finds which way is front and up, and straightens a car that sits at an angle in the file.
 - **A check on every import:** what kind of model it is (solid, hollow shell, single skin or many parts), how thick its walls are, and what is wrong with it.
 - **Light fix:** removes specks and broken triangles, untangles touching surfaces, turns inside-out areas round and closes small holes, without moving the surface you see.
+- **Rebuild:** for a badly broken model. Anvil makes it again as one clean, closed piece on a fine grid: holes, doubled and tangled triangles go, and overlapping parts merge into one. A hollow shell stays a shell. Choose Coarse, Normal or Fine detail.
+- **Symmetrize:** keep the left or the right side and mirror it over the other, so both sides match exactly; the side that goes shows in red. Anvil says how much the two sides differ and where the model's middle really is.
 - **Make solid:** turn a hollow shell into a solid. The inner skin and anything loose inside (seats, a dashboard) goes, the windows are closed, and the underside is cut off flat at the height you choose, wheel arches included. The inner skin shows in red first.
 - **Parts, openings and reduce:** tick which loose parts to keep, close chosen openings with a flat or smooth patch, and thin out the triangles where the surface allows it.
 
@@ -80,6 +82,11 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 - **Clear warnings:** a line on the car says what does not fit (wheelbase, axle position, tyres sticking out or too tall) and fixes it with one click.
 - **Your chassis library:** save a chassis and pick it again for the next body, or share it as an `.anvilchassis` file. Load your printed chassis's own STL to see the real thing inside the body.
 - **Stretch and arches:** lengthen, shorten or widen the body between the arches, and cut the arches round the tyres or flare them out.
+- **Tabs:** besides posts, hold the body on with tabs on the inside of the side walls: screw tabs (a flat tab with a screw hole at chassis height, with ribs) or clip tabs (a hook that snaps under the chassis edge). Click where they go; Mirror puts one on the other side.
+- **LED lights:** click on a headlight or taillight for an LED pocket: a bore through the wall where the light shines out (open, or a thin window for clear resin), with a socket inside that holds the LED straight. 1.8, 3 and 5 mm presets or your own size; on a solid body, a blind hole.
+- **Interior:** a flat cockpit tray shaped to the inside of the side walls, with a driver (helmet, shoulders, torso) and a steering wheel if you like, shown in amber first. Clip it in (ledges grow on the walls and the tray prints on its own beside the car) or join it to the body. Anvil warns when the helmet would touch the roof.
+- **Variants:** from Final check, export other versions of the body in one go: at another scale (1:32 → 1:24) and with or without parts such as the wing or the interior. At another scale every place you set grows with the body, while the wall, posts, tabs, pins, holes and text height stay their real size. Each variant is its own STL file.
+- **Clearance:** shows in red where the body comes closer than the gap you set to the tyres, the room the guide swings in, or the chassis (its STL: motor, gears, magnet). Each spot has its fix: cut the arches, cut room for the guide, or thin the wall from inside where the chassis touches. Final check lists anything that still touches.
 - **Body posts:** screw posts or brass-tube sockets, mirrored, reaching from the chassis deck into the wall. Make your own post types, with a fit test piece and a loose post to print first.
 
 ### Windows and glazing
@@ -89,6 +96,10 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 
 ### Shape and finish
 
+- **Panel lines:** shallow panel lines vanish when printed small. Anvil finds the narrow grooves on the outside (shown in red first) and makes them as deep as you set, or only those in your selection.
+- **Text:** race numbers, names and letters in the fonts on your computer, raised out of the body or cut into it, following its curve. Click where it goes; with Mirror on, the other side gets it too, reading the right way round. The letters are kept in the project, so it builds the same anywhere.
+- **Glue tabs:** when a body is cut into pieces (Slice keeping both, or Split off), add strips on the inside of the wall that stick out past the cut, so the other piece slides over them, lines up and has more to glue to. They show in amber before the cut; spread them evenly, add or remove them, slide each along the cut, and set their width, reach, thickness and the room left for the other wall.
+- **Split off:** in the Cut off tool, keep the part instead: a wing or mirror is split from the body to print on its own, moved clear of it, with locating pins on one cut face and matching holes in the other so it glues back in the same place. Anvil puts the pins where the cut face is thickest and checks there is room behind the holes.
 - **Cut off:** take off mirrors, a spoiler or other add-ons with a small cutting plane you move, turn and size in the 3D view. Only what the plane cuts free goes, it shows in red first, and the cut is closed flat. Mirrors on both sides go in one step.
 - **Delete and patch, smooth, slice:** remove areas and patch the hole, smooth with a brush while sharp edges stay, or slice the body, straight or at an angle you choose, to trim it or print it in parts.
 - **Add parts:** load a wing, scoop, mirror or driver, place it, and join it to the body or keep it as its own print.

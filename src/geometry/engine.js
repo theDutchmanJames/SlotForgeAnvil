@@ -12,7 +12,7 @@ import { applyFill, applyRepair } from './repair.js';
 import { applyReduce } from './reduce.js';
 import { applyFloor, applyHollow } from './shell.js';
 import { applyHammer } from './hammer.js';
-import { applyArchCut, applyStretch } from './arches.js';
+import { applyArchCut, applyGuideCut, applyStretch } from './arches.js';
 import { applyPosts } from './posts.js';
 import { applyWindows } from './windows.js';
 import { applyAddPart, applySmooth, capPlane } from './finish.js';
@@ -20,6 +20,13 @@ import { boundaryLoops, pairEdges, splitTouching } from './topology.js';
 import { fillLoop } from './fill.js';
 import { applyCutoff } from './cutoff.js';
 import { applySolid } from './solid.js';
+import { applyMounts } from './mounts.js';
+import { applyRebuild } from './rebuild.js';
+import { glueTabs } from './gluetabs.js';
+import { applyPanelLines, applyText } from './detail.js';
+import { applyInterior } from './interior.js';
+import { applyLights } from './lights.js';
+import { applySymmetrize } from './symmetry.js';
 
 export const AXES = ['+x', '-x', '+y', '-y', '+z', '-z'];
 const unitOf = (axis) => {
@@ -236,12 +243,52 @@ export function slicePlane({ axis, at, tilt = 0, lean, pivot = 0 }) {
 // flat (a ring on a shell).
 // walls (with cap): close only cuts through a wall, leaving the inside of a
 // body open (for the floor line).
-export function applySlice(mesh, { axis, at, keep, cap = false, walls = false, gap = 10, tilt = 0, lean, pivot }) {
+// The frame of the slice plane for glue tabs: a point on it, its normal from
+// the `side` piece towards the other, and two directions along it.
+export function sliceFrame({ axis, at, tilt = 0, lean, pivot }, side) {
+  const pl = slicePlane({ axis, at, tilt, lean, pivot });
+  const c = [0, 0, 0];
+  c[pl.k] = at;
+  if (pl.tilted) c[pl.i] = Number.isFinite(pivot) ? pivot : 0;
+  const n = side === 'below' ? pl.normal : pl.normal.map((x) => -x);
+  const t = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const cr = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const u0 = cr(n, t), ul = Math.hypot(...u0);
+  const u = u0.map((x) => x / ul);
+  return { c, n, u, v: cr(n, u) };
+}
+
+// Glue tabs for one piece of a slice (still open at the cut): their blocks
+// and where they sit.
+export function sliceTabs(mesh, plane, glue) {
+  const side = glue.on === 'above' ? 'above' : 'below';
+  const pl = slicePlane(plane);
+  const raw = sliceOne(mesh, pl, plane.at, side);
+  return { side, ...glueTabs(raw, mesh, sliceFrame(plane, side), glue.tabs ?? [], glue) };
+}
+
+export function applySlice(mesh, { axis, at, keep, cap = false, walls = false, gap = 10, tilt = 0, lean, pivot, glue = null }) {
   const plane = { axis, at, tilt, lean, pivot };
   if (keep === 'both') {
     const k = 'xyz'.indexOf(axis);
-    const lo = applySlice(mesh, { ...plane, keep: 'below', cap, walls });
-    const hi = applySlice(mesh, { ...plane, keep: 'above', cap, walls });
+    let lo = applySlice(mesh, { ...plane, keep: 'below', cap, walls });
+    let hi = applySlice(mesh, { ...plane, keep: 'above', cap, walls });
+    // Glue tabs on one of the two, before they move apart.
+    let glueInfo = null;
+    if (glue?.tabs?.length) {
+      const g = sliceTabs(mesh, plane, glue);
+      const target = g.side === 'below' ? lo : hi;
+      const pos = Array.from(target.positions), idx = Array.from(target.indices);
+      for (const p of g.pieces) {
+        const off = pos.length / 3;
+        pos.push(...p.positions);
+        for (const v of p.indices) idx.push(v + off);
+      }
+      const joined = { positions: Float32Array.from(pos), indices: Uint32Array.from(idx), info: target.info };
+      if (g.side === 'below') lo = joined;
+      else hi = joined;
+      glueInfo = { tabs: g.placed.length, warnings: g.warnings };
+    }
     const shifted = Float32Array.from(hi.positions, (v, n) => (n % 3 === k ? v + gap : v));
     const off = lo.positions.length / 3;
     const idx = new Uint32Array(lo.indices.length + hi.indices.length);
@@ -250,7 +297,7 @@ export function applySlice(mesh, { axis, at, keep, cap = false, walls = false, g
     const pos = new Float32Array(lo.positions.length + shifted.length);
     pos.set(lo.positions);
     pos.set(shifted, lo.positions.length);
-    return { positions: pos, indices: idx, info: { changed: lo.info.changed, capped: (lo.info.capped ?? 0) + (hi.info.capped ?? 0) } };
+    return { positions: pos, indices: idx, info: { changed: lo.info.changed, capped: (lo.info.capped ?? 0) + (hi.info.capped ?? 0), ...(glueInfo ? { glue: glueInfo.tabs, warnings: glueInfo.warnings } : {}) } };
   }
   const pl = slicePlane(plane);
   const out = sliceOne(mesh, pl, at, keep);
@@ -371,6 +418,14 @@ const OPS = {
   hammer: applyHammer,
   stretch: applyStretch,
   arches: applyArchCut,
+  guidecut: applyGuideCut,
+  mounts: applyMounts,
+  rebuild: applyRebuild,
+  symmetrize: applySymmetrize,
+  panellines: applyPanelLines,
+  text: applyText,
+  interior: applyInterior,
+  lights: applyLights,
   posts: applyPosts,
   windows: applyWindows,
   smooth: applySmooth,

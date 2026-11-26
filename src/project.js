@@ -48,13 +48,21 @@ export const STEP_NAMES = {
   hammer: 'Hammer',
   stretch: 'Stretch',
   arches: 'Wheel arches',
+  guidecut: 'Guide room',
   posts: 'Posts',
+  mounts: 'Tabs',
   windows: 'Windows',
   smooth: 'Smooth',
   addpart: 'Add part',
   repair: 'Light fix',
   fill: 'Close openings',
   solid: 'Make solid',
+  rebuild: 'Rebuild',
+  symmetrize: 'Symmetrize',
+  panellines: 'Panel lines',
+  text: 'Text',
+  interior: 'Interior',
+  lights: 'LED lights',
   reduce: 'Reduce',
 };
 
@@ -103,10 +111,10 @@ export function createHistory(limit = 60) {
 
 // What undo restores: everything except the imported file.
 export const snapshot = (p) =>
-  JSON.stringify({ name: p.name, units: p.units, mirror: p.mirror, protect: p.protect !== false, print: p.print, chassis: p.chassis ?? null, buck: p.buck ?? null, steps: p.steps });
+  JSON.stringify({ name: p.name, units: p.units, mirror: p.mirror, protect: p.protect !== false, print: p.print, chassis: p.chassis ?? null, buck: p.buck ?? null, variants: p.variants ?? [], steps: p.steps });
 export function restore(project, snap) {
   const s = JSON.parse(snap);
-  return { ...project, name: s.name, units: s.units, mirror: s.mirror, protect: s.protect !== false, print: s.print ?? { ...DEFAULT_PRINT }, chassis: s.chassis ?? null, buck: s.buck ?? null, steps: s.steps };
+  return { ...project, name: s.name, units: s.units, mirror: s.mirror, protect: s.protect !== false, print: s.print ?? { ...DEFAULT_PRINT }, chassis: s.chassis ?? null, buck: s.buck ?? null, variants: s.variants ?? [], steps: s.steps };
 }
 
 // ------------------------------------------------------------ project files
@@ -135,6 +143,7 @@ export function encodeProjectFile(p) {
     print: p.print,
     chassis: p.chassis ?? null,
     buck: p.buck ?? null,
+    variants: p.variants ?? [],
     parts: Object.fromEntries(Object.entries(p.parts ?? {}).map(([id, f]) => [id, { fileName: f.fileName, stl: toBase64(new Uint8Array(f.bytes)) }])),
     chassisMesh: p.chassisMesh ? { fileName: p.chassisMesh.fileName, stl: toBase64(new Uint8Array(p.chassisMesh.bytes)) } : null,
     source: { fileName: p.source.fileName, stl: toBase64(new Uint8Array(p.source.bytes)) },
@@ -161,6 +170,7 @@ export function decodeProjectFile(text) {
     print: { ...DEFAULT_PRINT, ...(data.print ?? {}) },
     chassis: data.chassis ?? null,
     buck: data.buck ?? null,
+    variants: Array.isArray(data.variants) ? data.variants : [],
     parts: Object.fromEntries(Object.entries(data.parts ?? {}).map(([id, f]) => [id, { fileName: String(f.fileName || 'part.stl'), bytes: fromBase64(f.stl).buffer }])),
     chassisMesh: data.chassisMesh?.stl ? { fileName: String(data.chassisMesh.fileName || 'chassis.stl'), bytes: fromBase64(data.chassisMesh.stl).buffer } : null,
     source: { fileName: String(data.source.fileName || 'model.stl'), bytes: fromBase64(data.source.stl).buffer },
@@ -199,7 +209,7 @@ async function run(mode, fn) {
 export const saveLocal = (p) =>
   run('readwrite', (s) =>
     s.put(
-      { name: p.name, units: p.units, mirror: p.mirror, protect: p.protect !== false, print: p.print, chassis: p.chassis ?? null, chassisMesh: p.chassisMesh ?? null, buck: p.buck ?? null, parts: p.parts ?? {}, source: p.source, steps: p.steps, saved: Date.now() },
+      { name: p.name, units: p.units, mirror: p.mirror, protect: p.protect !== false, print: p.print, chassis: p.chassis ?? null, chassisMesh: p.chassisMesh ?? null, buck: p.buck ?? null, variants: p.variants ?? [], parts: p.parts ?? {}, source: p.source, steps: p.steps, saved: Date.now() },
       KEY,
     ),
   );

@@ -5,6 +5,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
+import { guideZone } from './geometry/clearance.js';
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
@@ -626,6 +627,29 @@ export class Viewport {
   // ('translate' | 'rotate' | 'scale') } or null. The active plane gets
   // handles; onChange(cut) gets it back after each drag, as
   // { at, normal, up, w, h }. Mirror copies show as outlines.
+  // Pieces about to be added (glue tabs): drawn in amber, seen through the body.
+  showPieces(list) {
+    if (!this.pieceGroup) {
+      this.pieceGroup = new THREE.Group();
+      this.scene.add(this.pieceGroup);
+    }
+    for (const o of this.pieceGroup.children) {
+      o.geometry?.dispose();
+      o.material?.dispose();
+    }
+    this.pieceGroup.clear();
+    for (const p of list ?? []) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(p.positions), 3));
+      geo.setIndex(p.indices);
+      geo.computeVertexNormals();
+      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xf2a33a, transparent: true, opacity: 0.85, depthTest: false }));
+      m.renderOrder = 22;
+      this.pieceGroup.add(m);
+    }
+    this.render();
+  }
+
   setCutter(state, onChange) {
     this.cutterChange = onChange;
     if (!this.cutters) {
@@ -820,6 +844,21 @@ export class Viewport {
     // Guide blade ahead of the front axle, down in the slot.
     const blade = c.front.diameter * 0.35;
     if (!mesh) add(new THREE.BoxGeometry(blade, Math.max(c.front.diameter * 0.05, 0.4), blade * 0.7), c.frontX - c.guideAhead, 0, ground + blade * 0.15);
+    // The room the guide swings in: a faint round zone round the guide post.
+    {
+      const gz = guideZone(c, ground);
+      const h = Math.max(gz.top - ground, 0.5);
+      const zone = add(new THREE.CylinderGeometry(gz.r, gz.r, h, 40, 1, true), gz.x, gz.y, ground + h / 2, false);
+      zone.rotation.x = Math.PI / 2;
+      zone.material.opacity = 0.08;
+      zone.material.side = THREE.DoubleSide;
+      const ring = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.CylinderGeometry(gz.r, gz.r, h, 40, 1), 30), line());
+      ring.position.copy(zone.position);
+      ring.rotation.x = Math.PI / 2;
+      ring.material.opacity = 0.5;
+      ring.renderOrder = 21;
+      g.add(ring);
+    }
     // The track surface.
     const track = new THREE.Mesh(
       new THREE.PlaneGeometry(len * 1.6, (c.rear.inOut + c.rear.width) * 2.4),

@@ -112,6 +112,59 @@ export function capPlane(mesh, axis, at, tol = 1e-4, tilted = null, walls = fals
   return capLoops(mesh, loops, flatten, walls);
 }
 
+// Earcut leaves out points that lie in a straight line along an outline. The
+// triangles round them would leave a crack: put each left-out point back into
+// the triangle edge it lies on. rings: the point count of each outline, in
+// the order their points were given (outer first, then the holes).
+export function keepAllPoints(tris, rings) {
+  const n = rings.reduce((s, k) => s + k, 0);
+  const used = new Uint8Array(n);
+  for (const t of tris) for (const i of t) used[i] = 1;
+  if (used.every(Boolean)) return tris;
+  const ringOf = new Int32Array(n), start = [];
+  let s = 0;
+  rings.forEach((k, r) => {
+    start.push(s);
+    ringOf.fill(r, s, s + k);
+    s += k;
+  });
+  const after = (i) => {
+    const r = ringOf[i];
+    return i + 1 < start[r] + rings[r] ? i + 1 : start[r];
+  };
+  // The points left out between a and b, walking forward along their outline.
+  const between = (a, b) => {
+    if (ringOf[a] !== ringOf[b]) return null;
+    const out = [];
+    for (let i = after(a); i !== b; i = after(i)) {
+      if (used[i] || i === a) return null;
+      out.push(i);
+    }
+    return out;
+  };
+  const out = [];
+  const queue = tris.map((t) => [...t]);
+  while (queue.length) {
+    const t = queue.pop();
+    let split = false;
+    for (let k = 0; k < 3 && !split; k++) {
+      const a = t[k], b = t[(k + 1) % 3], o = t[(k + 2) % 3];
+      let chain = between(a, b);
+      if (!chain?.length) {
+        const back = between(b, a);
+        chain = back?.length ? back.reverse() : null;
+      }
+      if (!chain?.length) continue;
+      const run = [a, ...chain, b];
+      for (let i = 0; i < run.length - 1; i++) queue.push([run[i], run[i + 1], o]);
+      for (const i of chain) used[i] = 1;
+      split = true;
+    }
+    if (!split) out.push(t);
+  }
+  return out;
+}
+
 // Wider than this share of the model's diagonal, an outline is not a wall.
 export const WALL_WIDTH = 0.05;
 
@@ -150,7 +203,7 @@ export function capLoops(mesh, loops, flatten, walls = false) {
     capped++;
     const contour = outer, holePts = holes.map((m) => flat[m]);
     const ids = [...loops[n], ...holes.flatMap((m) => loops[m])];
-    const tris = ShapeUtils.triangulateShape(contour, holePts);
+    const tris = keepAllPoints(ShapeUtils.triangulateShape(contour, holePts), [contour.length, ...holePts.map((h) => h.length)]);
     // The cap runs the way its outline asks (boundaryLoops gives that order).
     const want = Math.sign(area(contour));
     for (const [a, b, c] of tris) {

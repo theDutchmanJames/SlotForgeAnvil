@@ -15,10 +15,16 @@ import collectionDark from './assets/slotforge-dark.svg?inline';
 import collectionLight from './assets/slotforge-light.svg?inline';
 import { Viewport } from './viewport.js';
 import { encodeSTL } from './geometry/stl-mesh.js';
-import { AXES, bounds, encodeRuns, runCount } from './geometry/engine.js';
+import { AXES, bounds, encodeRuns, runCount, sliceTabs } from './geometry/engine.js';
 import { partPieces } from './geometry/finish.js';
-import { cutoffPreview } from './geometry/cutoff.js';
+import { PIN_DEFAULTS, cutoffPreview, splitTabPreview } from './geometry/cutoff.js';
+import { GLUE_DEFAULTS, spreadTabs } from './geometry/gluetabs.js';
+import { TEXT_FONTS, traceText } from './textoutline.js';
+import { INTERIOR_DEFAULTS, interiorPieces } from './geometry/interior.js';
+import { LED_SIZES, LIGHT_DEFAULTS } from './geometry/lights.js';
+import { OPTIONAL_STEPS, variantFactor, variantSteps } from './variants.js';
 import { fitReport, suggestChassis } from './geometry/chassis.js';
+import { checkClearance, guideZone } from './geometry/clearance.js';
 import { flareBlows } from './geometry/arches.js';
 import { applyOrient, guessOrient } from './geometry/engine.js';
 import { readSTLMesh } from './geometry/stl-mesh.js';
@@ -39,6 +45,8 @@ import {
   savePostType,
 } from './library-db.js';
 import { POST_TYPES, checkPostType, fitTestPiece, loosePost } from './geometry/posts.js';
+import { TAB_DEFAULTS } from './geometry/mounts.js';
+import { REBUILD_DETAIL, rebuildCell } from './geometry/rebuild.js';
 import { pillarWarnings, windowOutlines } from './geometry/windows.js';
 import { sampleClosedCurve } from './geometry/curve.js';
 import { BUCK_DEFAULTS } from './geometry/buck.js';
@@ -343,33 +351,31 @@ const MENUS = [
   {
     id: 'repair',
     name: 'Repair',
-    tools: [['check', 'checklist', 'Check'], ['fix', 'wrench', 'Light fix'], ['parts', 'parts', 'Parts'], ['openings', 'fill', 'Close openings'], ['solid', 'solid', 'Make solid'], ['reduce', 'reduce', 'Reduce']],
-    later: [['Rebuild', 'Remakes a badly broken model as one solid. Comes later.']],
+    tools: [['check', 'checklist', 'Check'], ['fix', 'wrench', 'Light fix'], ['parts', 'parts', 'Parts'], ['openings', 'fill', 'Close openings'], ['rebuild', 'rebuild', 'Rebuild'], ['symmetry', 'mirror', 'Symmetrize'], ['solid', 'solid', 'Make solid'], ['reduce', 'reduce', 'Reduce']],
   },
   { id: 'scale', name: 'Scale', tools: [['orient', 'orient', 'Orient'], ['scale', 'scale', 'Scale']] },
   {
     id: 'chassis',
     name: 'Chassis',
-    tools: [['chassis', 'ghost', 'Chassis'], ['tyres', 'tyre', 'Tyres'], ['arches', 'arch', 'Wheel arches'], ['stretch', 'stretch', 'Stretch']],
+    tools: [['chassis', 'ghost', 'Chassis'], ['tyres', 'tyre', 'Tyres'], ['clearance', 'clear', 'Clearance'], ['arches', 'arch', 'Wheel arches'], ['stretch', 'stretch', 'Stretch']],
   },
   {
     id: 'shell',
     name: 'Shell',
-    tools: [['floor', 'floor', 'Floor line'], ['hammer', 'hammer', 'Hammer'], ['hollow', 'shell', 'Hollow'], ['paint', 'brush', 'Paint thickness']],
-    later: [['Rebuild', 'Remakes a badly broken model as one solid. Comes later.']],
+    tools: [['floor', 'floor', 'Floor line'], ['hammer', 'hammer', 'Hammer'], ['hollow', 'shell', 'Hollow'], ['paint', 'brush', 'Paint thickness'], ['interior', 'seat', 'Interior']],
   },
   {
     id: 'shape',
     name: 'Shape',
-    tools: [['slice', 'slice', 'Slice'], ['cutoff', 'cutoff', 'Cut off'], ['select', 'trash', 'Delete selection'], ['smooth', 'smooth', 'Smooth'], ['addpart', 'plus', 'Add part']],
+    tools: [['slice', 'slice', 'Slice'], ['cutoff', 'cutoff', 'Cut off'], ['select', 'trash', 'Delete selection'], ['smooth', 'smooth', 'Smooth'], ['panellines', 'detail', 'Panel lines'], ['text', 'text', 'Text'], ['addpart', 'plus', 'Add part']],
   },
   {
     id: 'windows',
     name: 'Windows',
-    tools: [['windows', 'window', 'Windows']],
+    tools: [['windows', 'window', 'Windows'], ['lights', 'bulb', 'LED lights']],
     later: [['Close window', 'Fills an opening the model came with. Comes later.'], ['Recessed window', 'Sinks a painted window a fraction. Comes later.']],
   },
-  { id: 'posts', name: 'Posts', tools: [['posts', 'post', 'Posts'], ['posteditor', 'wrench', 'Post editor']] },
+  { id: 'posts', name: 'Posts', tools: [['posts', 'post', 'Posts'], ['tabs', 'tab', 'Tabs'], ['posteditor', 'wrench', 'Post editor']] },
   { id: 'buck', name: 'Buck', tools: [['buck', 'buck', 'Window buck']] },
 ];
 
@@ -539,9 +545,17 @@ function renderPanel() {
     parts: panelParts,
     openings: panelOpenings,
     solid: panelSolid,
+    rebuild: panelRebuild,
+    symmetry: panelSymmetry,
+    panellines: panelLines,
+    interior: panelInterior,
+    lights: panelLights,
+    variants: panelVariants,
+    text: panelText,
     reduce: panelReduce,
     chassis: panelChassis,
     tyres: panelTyres,
+    clearance: panelClearance,
     arches: panelArches,
     stretch: panelStretch,
     floor: panelFloor,
@@ -549,6 +563,7 @@ function renderPanel() {
     hammer: panelHammer,
     paint: panelPaint,
     posts: panelPosts,
+    tabs: panelTabs,
     posteditor: panelPostEditor,
     windows: panelWindows,
     buck: panelBuck,
@@ -659,11 +674,13 @@ function panelCutoff(editing) {
   const s = ui.cutoff,
     u = project.units;
   if (editing && s.editingId !== editing.id) {
-    Object.assign(s, { mirror: false, open: false }, structuredClone(editing.params), { active: 0, editingId: editing.id });
+    Object.assign(s, { mirror: false, open: false, split: null }, structuredClone(editing.params), { active: 0, editingId: editing.id });
   }
   if (!editing) s.editingId = null;
   const placing = ui.pointer === 'cutplace';
-  const intro = head(editing ? 'Change cut off step' : 'Cut off', 'Take off a part such as a mirror or a spoiler. Put a small cutting plane across where it joins the body: only what the plane cuts free goes, the rest stays.');
+  const splitting = !!s.split;
+  const intro = `${head(editing ? 'Change cut off step' : 'Cut off', splitting ? 'Split off a part such as a wing or a mirror to print on its own, with locating pins so it glues back in the same place. Put a small cutting plane across where it joins the body.' : 'Take off a part such as a mirror or a spoiler. Put a small cutting plane across where it joins the body: only what the plane cuts free goes, the rest stays.')}
+    <span class="seg"><button data-act="cut-action" data-v="cut" class="${splitting ? '' : 'on'}">Cut off</button><button data-act="cut-action" data-v="split" class="${splitting ? 'on' : ''}">Split off</button></span>`;
   const placeBtn = (label) =>
     placing
       ? `<div class="note">Click on the model where the part joins the body. <button class="btn sm ghost" data-act="cut-place-stop">Cancel</button></div>`
@@ -685,14 +702,30 @@ function panelCutoff(editing) {
     <div class="f">Size<div class="row">${numField('cut-w', round(toUnits(c.w, u), 2), u)}<span class="muted">×</span>${numField('cut-h', round(toUnits(c.h, u), 2), u)}</div></div>
     <div class="f">Push along the arrow<div class="row"><button class="btn sm icon" data-act="cut-push" data-v="-0.2" title="Move 0.2 mm back">−</button><span class="muted">0.2 mm</span><button class="btn sm icon" data-act="cut-push" data-v="0.2" title="Move 0.2 mm on">+</button><button class="btn sm" data-act="cut-flip">Flip side</button></div><div class="muted" style="font-weight:400;font-size:12px">The arrow points to the part that goes.</div></div>
     <label class="chk"><input type="checkbox" data-field="cut-mirror" ${s.mirror ? 'checked' : ''}>Cut the other side too (mirrors)</label>
-    <label class="chk"><input type="checkbox" data-field="cut-open" ${s.open ? 'checked' : ''}>Leave the cut open</label>
-    ${status}
-    <div class="row"><button class="btn primary sm" data-act="cut-apply"${!editing && pv?.error ? ' disabled' : ''}>${editing ? 'Update step' : 'Cut off'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>`;
+    ${splitting ? splitOptions(s.split) : `<label class="chk"><input type="checkbox" data-field="cut-open" ${s.open ? 'checked' : ''}>Leave the cut open</label>`}
+    ${status.replace('goes:', splitting ? 'is split off:' : 'goes:')}
+    ${editing ? stepWarnings(editing) : ''}
+    <div class="row"><button class="btn primary sm" data-act="cut-apply"${!editing && pv?.error ? ' disabled' : ''}>${editing ? 'Update step' : splitting ? 'Split off' : 'Cut off'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>`;
 }
+
+// Pins and the gap for Split off.
+function splitOptions(o) {
+  const u = project.units;
+  const f = (key, label) => `<span class="fx">${label}${numField(`cut-pin-${key}`, round(toUnits(o[key], u), 2), u)}</span>`;
+  return `<div class="f">Locating pins<span class="seg">${[[0, 'None'], [1, 'One'], [2, 'Two']].map(([n, l]) => `<button data-act="cut-pins" data-v="${n}" class="${o.count === n ? 'on' : ''}">${l}</button>`).join('')}</span></div>
+    ${o.count ? `<div class="g2">${f('diameter', 'Pin diameter')}${f('length', 'Pin length')}${f('clearance', 'Room round the pin')}</div>
+    <div class="f">Pins on<span class="seg">${[['auto', 'Auto'], ['body', 'The body'], ['part', 'The part']].map(([k, l]) => `<button data-act="cut-pin-on" data-v="${k}" class="${o.on === k ? 'on' : ''}">${l}</button>`).join('')}</span>
+      <span class="muted" style="font-weight:400;font-size:12px">The hole goes in the other side. Auto puts the hole where there is most room behind it.</span></div>` : ''}
+    <div class="f">Move the part away by<div class="row">${numField('cut-pin-gap', round(toUnits(o.gap, u), 2), u)}</div></div>
+    ${glueSection('cut', [['body', 'The body'], ['part', 'The part']], ui.cutoff.editingId ? null : glueNow('cut'))}`;
+}
+
+// A step's warnings, as notes.
+const stepWarnings = (step) => (result.results.find((r) => r.id === step.id)?.info?.warnings ?? []).map((w) => `<div class="note warn">${esc(w)}</div>`).join('');
 
 function cutoffParams() {
   const s = ui.cutoff;
-  return { cuts: structuredClone(s.cuts), ...(s.mirror ? { mirror: true } : {}), ...(s.open ? { open: true } : {}) };
+  return { cuts: structuredClone(s.cuts), ...(s.mirror ? { mirror: true } : {}), ...(s.split ? { split: { ...s.split } } : s.open ? { open: true } : {}) };
 }
 
 // What the cut would take off, worked out on the model shown. Kept until
@@ -752,13 +785,65 @@ function sliceParams() {
     ...(cap ? { cap: true } : {}),
     ...(keep === 'both' ? { gap: round(gap ?? 10, 3) } : {}),
     ...(tilt ? { tilt: round(tilt, 2), lean, pivot: pivot ?? slicePivot(lean) } : {}),
+    ...(keep === 'both' && ui.slice.glue?.tabs?.length ? { glue: structuredClone(ui.slice.glue) } : {}),
   };
+}
+
+// ------------------------------------------------------------ glue tabs
+
+// Where a cut's glue tabs live: the slice's, or the split's.
+const glueOf = (owner) => (owner === 'slice' ? ui.slice.glue : ui.cutoff.split?.glue);
+function setGlue(owner, g) {
+  if (owner === 'slice') ui.slice.glue = g;
+  else if (ui.cutoff.split) ui.cutoff.split.glue = g;
+}
+
+// The Glue tabs part of a panel. sides: [[value, name], …] for "Tabs on".
+function glueSection(owner, sides, preview) {
+  const g = glueOf(owner),
+    u = project.units;
+  const on = `<label class="chk"><input type="checkbox" data-field="glue-${owner}-on" ${g ? 'checked' : ''}>Glue tabs inside the cut</label>`;
+  if (!g)
+    return `${on}<div class="muted" style="font-size:12px">Strips on the inside of the wall that stick out past the cut: the other piece slides over them, lines up, and has more to glue to.</div>`;
+  const cutLabel = (t) => (owner === 'cut' && ui.cutoff.cuts.length > 1 ? ` · plane ${(t.k ?? 0) + 1}` : '');
+  const f = (key, label) => `<span class="fx">${label}${numField(`glue-${owner}-${key}`, round(toUnits(g[key], u), 2), u)}</span>`;
+  return `${on}
+    <div class="f">Tabs on<span class="seg">${sides.map(([v, n]) => `<button data-act="glue-side" data-v="${owner}|${v}" class="${g.on === v ? 'on' : ''}">${n}</button>`).join('')}</span></div>
+    <div class="row"><span class="num" style="width:64px"><input data-field="glue-${owner}-count" type="number" min="1" max="24" step="1" value="${g.count ?? 4}"></span><button class="btn sm" data-act="glue-spread" data-v="${owner}">Spread evenly</button><button class="btn sm ghost" data-act="glue-add" data-v="${owner}">${icon('plus')}Add a tab</button></div>
+    ${g.tabs.length ? `<div class="plist">${g.tabs
+      .map(
+        (t, i) => `<div class="prow"><span><b>Tab ${i + 1}</b><small>along the cut${cutLabel(t)}</small></span><input type="range" data-field="glue-${owner}-pos-${i}" min="0" max="1000" step="1" value="${Math.round(t.s * 1000)}" style="width:110px"><button class="btn sm icon ghost" data-act="glue-remove" data-v="${owner}|${i}" title="Remove this tab">${icon('trash')}</button></div>`,
+      )
+      .join('')}</div>` : '<div class="muted" style="font-size:12px">No tabs yet: spread some evenly, or add one.</div>'}
+    <div class="g2">${f('width', 'Width')}${f('reach', 'Reach past the cut')}${f('thick', 'Thickness')}${f('clearance', 'Room for the other wall')}</div>
+    <div class="muted" style="font-size:12px">The tabs show in amber on the car. Slide a tab to move it along the cut.</div>
+    ${(preview?.warnings ?? []).map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}`;
+}
+
+// The tabs about to be made, for the view (and their warnings for the panel).
+let gluePreview = { key: null, value: null };
+function glueNow(owner) {
+  if (!result) return null;
+  const params = owner === 'slice' ? sliceParams() : cutoffParams();
+  const g = owner === 'slice' ? params.glue : params.split?.glue;
+  if (!g?.tabs?.length) return null;
+  const key = JSON.stringify([buildToken, owner, params]);
+  if (gluePreview.key === key) return gluePreview.value;
+  const mesh = { positions: result.positions, indices: result.indices };
+  let value;
+  try {
+    value = owner === 'slice' ? sliceTabs(mesh, params, g) : splitTabPreview(mesh, params);
+  } catch (e) {
+    value = { pieces: [], warnings: [e.message] };
+  }
+  gluePreview = { key, value };
+  return value;
 }
 
 function panelSlice(editing) {
   const s = ui.slice,
     u = project.units;
-  if (editing && s.editingId !== editing.id) Object.assign(s, { tilt: 0, cap: false, gap: 10, pivot: null }, editing.params, { editingId: editing.id });
+  if (editing && s.editingId !== editing.id) Object.assign(s, { tilt: 0, cap: false, gap: 10, pivot: null, glue: null }, structuredClone(editing.params), { editingId: editing.id });
   if (!editing) s.editingId = null;
   const [lo, hi] = axisRange(s.axis);
   if (s.at == null || (!editing && (s.at < lo || s.at > hi))) s.at = s.axis === 'z' ? lo + (hi - lo) * 0.08 : (lo + hi) / 2;
@@ -773,7 +858,8 @@ function panelSlice(editing) {
     <div class="f">Tilt<div class="row"><button class="btn sm icon" data-act="slice-tilt" data-v="-1" title="Tilt 1° one way">−</button>${numField('slice-tilt', s.tilt, '°')}<button class="btn sm icon" data-act="slice-tilt" data-v="1" title="Tilt 1° the other way">+</button>${s.tilt ? '<button class="btn sm ghost" data-act="slice-tilt" data-v="0">Level</button>' : ''}</div></div>
     ${s.tilt ? `<div class="f">Slopes along<span class="seg">${leans.map((a) => `<button data-act="slice-lean" data-v="${a}" class="${s.lean === a ? 'on' : ''}">${LEAN_NAMES[a][0].toUpperCase() + LEAN_NAMES[a].slice(1)}</button>`).join('')}</span><div class="muted" style="font-weight:400;font-size:12px">${tiltHint(s)} Check the red plane in the view.</div></div>` : ''}
     <div class="f">Keep<span class="seg">${['below', 'above', 'both'].map((k) => `<button data-act="slice-keep" data-v="${k}" class="${s.keep === k ? 'on' : ''}">${k === 'both' ? 'Both' : KEEP_NAMES[s.axis][k]}</button>`).join('')}</span></div>
-    ${s.keep === 'both' ? `<div class="f">Move the two apart by<div class="row">${numField('slice-gap', round(toUnits(s.gap, u), 2), u)}</div></div>` : ''}
+    ${s.keep === 'both' ? `<div class="f">Move the two apart by<div class="row">${numField('slice-gap', round(toUnits(s.gap, u), 2), u)}</div></div>
+      ${glueSection('slice', [['below', KEEP_NAMES[s.axis].below], ['above', KEEP_NAMES[s.axis].above]], editing ? null : glueNow('slice'))}` : ''}
     <label class="chk"><input type="checkbox" data-field="slice-cap" ${s.cap ? 'checked' : ''}>Close the cut (along the wall on a hollow shell)</label>
     <div class="row"><button class="btn primary sm" data-act="slice-apply">${editing ? 'Update step' : 'Cut'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>`;
 }
@@ -827,8 +913,8 @@ function panelStepInfo(editing) {
 
 // ------------------------------------------------------------ repair panels
 
-const STEP_PANEL = { orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', solid: 'solid', reduce: 'reduce', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
-const STEP_MENU = { windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', cutoff: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', solid: 'repair', reduce: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', posts: 'posts' };
+const STEP_PANEL = { orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', solid: 'solid', rebuild: 'rebuild', symmetrize: 'symmetry', panellines: 'panellines', text: 'text', interior: 'interior', lights: 'lights', reduce: 'reduce', guidecut: 'clearance', mounts: 'tabs', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
+const STEP_MENU = { windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', cutoff: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', solid: 'repair', rebuild: 'repair', symmetrize: 'repair', panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', reduce: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', guidecut: 'chassis', mounts: 'posts', posts: 'posts' };
 
 // Results the worker works out on request, kept until the shape changes.
 const lookups = {
@@ -838,6 +924,7 @@ const lookups = {
   thickness: { token: -1, value: null, busy: false },
   skins: { token: -1, value: null, busy: false },
   solid: { token: -1, value: null, busy: false },
+  symmetry: { token: -1, value: null, busy: false },
 };
 function lookup(name) {
   const l = lookups[name];
@@ -908,7 +995,7 @@ function panelCheck() {
   if (c.kind === 'skin')
     expect = '<div class="note warn"><b>This surface has no thickness.</b><br>It cannot be printed as it is. Thickening it inwards comes with the Shell tools.</div>';
   else if (c.kind === 'many')
-    expect = '<div class="note warn"><b>The parts overlap.</b><br>Keep the body under Parts. Merging overlapping parts into one comes with the Rebuild tool.</div>';
+    expect = '<div class="note warn"><b>The parts overlap.</b><br>Keep the body under Parts, or merge everything into one clean piece with <button class="btn sm ghost" data-act="final-go" data-v="rebuild">Rebuild</button>.</div>';
   else expect = '<div class="note ok"><b>The outer surface stays exactly as it is.</b><br>' + (fixable ? 'The light fix only removes and untangles faults.' : 'This model needs no repair.') + '</div>';
   const coarse = c.triangles < 4000 ? '<div class="note warn">Only ' + c.triangles.toLocaleString() + ' triangles: curved panels may print with visible flat facets.</div>' : '';
   return `${head('Check', `${c.triangles.toLocaleString()} triangles`)}
@@ -1003,6 +1090,79 @@ const solidDefault = () => {
   const b = result.stats.bounds;
   return { flat: true, bottom: round(b.min[2] + b.size[2] * 0.1, 2) };
 };
+
+function panelRebuild(editing) {
+  const u = project.units;
+  const b = editing ? null : result.stats.bounds;
+  ui.rebuild ??= { detail: 'normal' };
+  if (editing && ui.rebuildFor !== editing.id) {
+    ui.rebuildFor = editing.id;
+    // The detail level whose grid size is nearest the step's.
+    const bb = result.stats.bounds;
+    ui.rebuild.detail = Object.keys(REBUILD_DETAIL).reduce((best, k) => (Math.abs(rebuildCell(bb, k) - editing.params.cell) < Math.abs(rebuildCell(bb, best) - editing.params.cell) ? k : best), 'normal');
+  }
+  if (!editing) ui.rebuildFor = null;
+  const cell = rebuildCell(b ?? result.stats.bounds, ui.rebuild.detail);
+  const info = editing && result.results.find((r) => r.id === editing.id)?.info;
+  const names = { coarse: 'Coarse', normal: 'Normal', fine: 'Fine' };
+  return `${head(editing ? 'Change rebuild' : 'Rebuild', 'Makes the model again as one clean, closed piece: holes, overlapping parts, doubled and tangled triangles are gone. Overlapping parts merge into one. A hollow shell stays a shell.')}
+    <div class="f">Detail<span class="seg">${Object.keys(REBUILD_DETAIL).map((k) => `<button data-act="rebuild-detail" data-v="${k}" class="${ui.rebuild.detail === k ? 'on' : ''}">${names[k]}</button>`).join('')}</span>
+      <span class="muted" style="font-weight:400;font-size:12px">A ${fmtLen(cell, u, 2)} grid: detail finer than that softens, and walls need to be at least ${fmtLen(cell * 2.5, u, 1)} thick to come through. Finer takes longer: from a few seconds to half a minute.</span></div>
+    ${info ? `<div class="note">${info.triangles.toLocaleString()} triangles, on a ${fmtLen(info.cell, u, 2)} grid${info.specks ? `; ${info.specks} speck${info.specks === 1 ? '' : 's'} left out` : ''}.</div>` : ''}
+    ${editing ? '' : '<div class="note">It goes in right after Orient, Scale and the repair steps, so everything after works on the rebuilt model. The original stays under Look › Original.</div>'}
+    <div class="row"><button class="btn primary sm" data-act="rebuild-apply">${icon('rebuild')}${editing ? 'Update step' : 'Rebuild'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>`;
+}
+
+function symOptions(editing) {
+  ui.sym ??= { keep: 'left', at: 0 };
+  if (editing && ui.symFor !== editing.id) {
+    ui.symFor = editing.id;
+    ui.sym = { keep: editing.params.keep, at: editing.params.at };
+  }
+  if (!editing) ui.symFor = null;
+  return ui.sym;
+}
+
+function panelSymmetry(editing) {
+  const o = symOptions(editing),
+    u = project.units;
+  const r = editing ? null : lookup('symmetry');
+  const side = (y) => `${fmtLen(Math.abs(y), u, 2)} ${y > 0 ? 'right' : 'left'} of the centre line`;
+  let report = '';
+  if (!editing) {
+    if (!r) report = '<div class="note">Comparing the two sides…</div>';
+    else {
+      const off = Math.abs(r.best) > 0.02;
+      report = `<div class="note">${r.atZero.most < 0.1 ? '<b>The two sides already match.</b>' : `The two sides differ by up to <b>${fmtLen(r.atZero.most, u, 2)}</b>, ${fmtLen(r.atZero.typical, u, 2)} in most places.`}
+        ${off ? `<br>The model's middle is ${side(r.best)}${r.atBest.most < r.atZero.most * 0.8 ? `: about that line they differ by up to ${fmtLen(r.atBest.most, u, 2)}` : ''}.` : ''}</div>
+        ${off && Math.abs(o.at - r.best) > 0.005 ? `<button class="btn sm ghost" data-act="sym-best">Use the model's middle as the line</button>` : ''}`;
+    }
+  }
+  return `${head(editing ? 'Change symmetrize' : 'Symmetrize', 'Keep one side of the car and mirror it over the other, so both sides match exactly. Handy when one side is damaged or a little lopsided. The side that goes shows in red.')}
+    ${report}
+    <div class="f">Keep<span class="seg"><button data-act="sym-keep" data-v="left" class="${o.keep === 'left' ? 'on' : ''}">Left side</button><button data-act="sym-keep" data-v="right" class="${o.keep === 'right' ? 'on' : ''}">Right side</button></span>
+      <span class="muted" style="font-weight:400;font-size:12px">Left and right as seen from the driver's seat.</span></div>
+    <div class="f">Centre line<div class="row">${numField('sym-at', round(toUnits(o.at, u), 3), u)}</div></div>
+    ${!editing && result.stats.faultyEdges ? '<div class="muted" style="font-size:12px">Faults on the kept side are copied to the other side too: run Light fix or Rebuild first.</div>' : ''}
+    <div class="row"><button class="btn primary sm" data-act="sym-apply">${icon('mirror')}${editing ? 'Update step' : 'Symmetrize'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>`;
+}
+
+// The faces on the side that goes, for the red preview.
+let symPaint = { key: null, faces: null };
+function symmetryFaces() {
+  const o = ui.sym;
+  const key = `${buildToken}|${o.keep}|${o.at}`;
+  if (symPaint.key === key) return symPaint.faces;
+  const P = result.positions, T = result.indices;
+  const faces = new Uint8Array(T.length / 3);
+  const away = o.keep === 'left' ? 1 : -1;
+  for (let f = 0; f < faces.length; f++) {
+    const y = (P[T[f * 3] * 3 + 1] + P[T[f * 3 + 1] * 3 + 1] + P[T[f * 3 + 2] * 3 + 1]) / 3;
+    if ((y - o.at) * away > 0) faces[f] = 1;
+  }
+  symPaint = { key, faces };
+  return faces;
+}
 
 function panelSolid(editing) {
   ui.solid ??= solidDefault();
@@ -1324,8 +1484,9 @@ function addBlows(blows, dollies) {
 // The bottom of the body: from before the posts, so a long post hanging
 // below the body does not push the chassis down.
 function bodyBottom() {
-  const posts = postsStep();
-  const info = posts && result.results.find((r) => r.id === posts.id)?.info;
+  // Posts and tabs both hang below the body: the first of them knows its bottom.
+  const first = project.steps.find((s) => s.enabled && (s.type === 'posts' || s.type === 'mounts'));
+  const info = first && result.results.find((r) => r.id === first.id)?.info;
   return info?.bodyBottom ?? result.stats.bounds.min[2];
 }
 const groundZ = () => bodyBottom() - project.chassis.clearance;
@@ -1552,9 +1713,94 @@ function chassisStatus() {
   if (r.problems.includes('wheelbase')) text = `wheelbase ${fmtLen(Math.abs(r.wheelbaseOff), u)} too ${r.wheelbaseOff > 0 ? 'long' : 'short'}`;
   else if (r.problems.some((p) => p.endsWith('wide'))) text = 'tyres stick out';
   else if (r.problems.some((p) => p.endsWith('tall'))) text = 'tyres too tall';
+  else if (clearanceNow().parts.length) {
+    text = 'touches the body';
+    r.problems.push('clearance');
+  }
   return `<span class="sb"><span class="dot ${r.problems.length ? 'w' : 'ok'}"></span><b>Chassis</b>${text}</span>`;
 }
 
+
+// ------------------------------------------------------------ clearance
+
+// Room to keep between the body and every part of the chassis.
+const clearGap = () => project.chassis?.gap ?? 0.5;
+
+// The check, kept until the body, the chassis or the gap changes.
+let clearCache = { key: null, value: null };
+function clearanceNow() {
+  const c = project?.chassis;
+  if (!c || !result) return { faces: null, parts: [] };
+  const mesh = chassisMeshPlaced();
+  const posts = postsStep()?.enabled ? postsStep().params : null;
+  const key = JSON.stringify([buildToken, c, groundZ(), mesh ? meshCache.key : null, posts?.posts, posts?.type?.outer, tabsStep()?.params.tabs]);
+  if (clearCache.key === key) return clearCache.value;
+  // Where a post meets the chassis is meant to touch: leave those spots out.
+  const reach = posts ? (posts.type?.outer ?? 3) / 2 + (posts.type?.fillet ?? 0) + 0.5 : 0;
+  const spots = posts?.posts ?? [];
+  // Tabs are made to touch the chassis too.
+  const tabs = tabsStep()?.params;
+  const tabSpots = (tabs?.tabs ?? []).map((t) => ({ x: t.x, side: t.side, half: (tabs[t.kind]?.width ?? 6) / 2 + 0.5 }));
+  const skip = spots.length || tabSpots.length
+    ? (x, y) => spots.some((p) => Math.hypot(x - p.x, y - p.y) < reach) || tabSpots.some((t) => Math.abs(x - t.x) < t.half && Math.sign(y) === t.side)
+    : null;
+  let value;
+  try {
+    value = checkClearance({ positions: result.positions, indices: result.indices }, c, groundZ(), { gap: clearGap(), mesh, skip });
+  } catch (e) {
+    value = { faces: null, parts: [], error: e.message };
+  }
+  clearCache = { key, value };
+  return value;
+}
+
+function clearFix(p) {
+  const u = project.units;
+  if (p.kind === 'tyre') return `<button class="btn sm" data-act="clear-arch" data-v="${p.pair}">Cut the ${p.pair} arches round the tyres</button>`;
+  if (p.kind === 'guide') return '<button class="btn sm" data-act="clear-guide">Cut room for the guide</button>';
+  const hollow = hollowStep();
+  if (!hollow) return '<span class="muted" style="font-size:12px">Hollow the body first: then Anvil can thin the wall here.</span>';
+  const min = PRINT_WALLS[printOf().process].min;
+  if (hollow.params.wall - p.depth < min)
+    return `<span class="muted" style="font-size:12px">Too deep to thin away: the wall would be ${fmtLen(Math.max(hollow.params.wall - p.depth, 0), u)}. Raise the body on the chassis, or move the chassis.</span>`;
+  // Thinned here already and still touching: it is the outside of the body or
+  // the edge of an opening, which thinning cannot move.
+  const done = (hollow.params.strokes ?? []).some((s) => Math.hypot(...s.at.map((x, k) => x - p.at[k])) < s.radius * 0.7 && s.wall <= thinTo(p) + 1e-6);
+  if (done)
+    return '<span class="muted" style="font-size:12px">Already thinned here. What still touches is the outside of the body or the edge of an opening: raise the body on the chassis, or move the chassis.</span>';
+  return `<button class="btn sm" data-act="clear-thin" data-v="${p.key}">Thin the wall here to ${fmtLen(thinTo(p), u, 2)}</button>`;
+}
+
+// The wall to thin to at a chassis hit: a little more than the hit is deep,
+// as the thinning fades out towards the edge of the spot; never under the minimum.
+function thinTo(p) {
+  const min = PRINT_WALLS[printOf().process].min;
+  return round(Math.max(min, hollowStep().params.wall - p.depth * 1.5 - 0.1), 2);
+}
+
+function panelClearance() {
+  const c = project.chassis,
+    u = project.units;
+  if (!c)
+    return `${head('Clearance', 'Checks that the body clears the tyres, the guide and the chassis.')}<div class="note warn">Set up a chassis first.</div>
+      <button class="btn sm" data-act="tool" data-v="chassis">${icon('ghost')}Chassis</button>`;
+  const r = clearanceNow();
+  const mesh = !!chassisMeshPlaced();
+  const rows = r.parts
+    .map(
+      (p) => `<div class="pair"><div class="ph"><span class="dot bad"></span><b>${p.label}</b><span class="lock">${fmtLen(p.depth, u, 2)} too close</span></div>
+        <span class="muted" style="font-size:11.5px">${p.corners.toLocaleString()} corner${p.corners === 1 ? '' : 's'} of the body ${p.kind === 'guide' ? 'in the room the guide swings in' : p.kind === 'tyre' ? 'in the way of the tyre' : 'touching the chassis'}.</span>
+        <div class="row">${clearFix(p)}</div></div>`,
+    )
+    .join('');
+  const g = guideZone(c, groundZ());
+  return `${head('Clearance', `Shows in red where the body comes closer than the gap to the ${mesh ? 'chassis file' : 'deck'}, the tyres or the guide.`)}
+    ${r.error ? `<div class="note bad">${esc(r.error)}</div>` : r.parts.length ? rows : `<div class="note ok"><b>The body clears the chassis.</b><br>Tyres, guide and ${mesh ? 'chassis' : 'deck'} stay ${fmtLen(clearGap(), u)} or more away.</div>`}
+    <div class="g2"><span class="fx">Gap to keep${chField('gap', clearGap())}</span>
+      <span class="fx">Guide room round${chField('guideRadius', g.r)}</span>
+      <span class="fx">Guide room height${chField('guideHeight', g.top - groundZ())}</span></div>
+    <div class="muted" style="font-size:12px">${mesh ? 'Checked against your chassis STL.' : 'No chassis STL: checked against the deck from your numbers. Load the STL under Chassis to check the motor, gears and magnet too.'} Where the posts meet the chassis is left out.</div>`;
+}
 
 // ------------------------------------------------------------ stretch and arches
 
@@ -1810,6 +2056,366 @@ function panelPostEditor() {
     <div class="f">Print a test first<span class="muted" style="font-weight:400;font-size:12px">A fit test piece is one post under a small square of wall: print it upside down and try your screw or tube. Each test piece is exported on its own, never with the body.</span>
       <div class="g2"><span class="fx">Wall${numField('pt-wall', round(toUnits(ui.postTest.wall, u), 2), u)}</span><span class="fx">Post length${numField('pt-length', round(toUnits(ui.postTest.length, u), 2), u)}</span></div>
       <div class="row"><button class="btn sm" data-act="pe-fit">${icon('export')}Fit test piece</button><button class="btn sm ghost" data-act="pe-loose">${icon('export')}Loose post</button></div></div>`;
+}
+
+// ------------------------------------------------------------ fine detail
+
+// Panel lines: deepened to at least what the printer shows (its minimum wall, roughly).
+function lineOptions(editing) {
+  ui.plines ??= { depth: PRINT_WALLS[printOf().process].min * 0.6, radius: 1, min: 0.03, onlySel: false };
+  if (editing && ui.plinesFor !== editing.id) {
+    ui.plinesFor = editing.id;
+    Object.assign(ui.plines, { depth: editing.params.depth, radius: editing.params.radius, min: editing.params.min, onlySel: !!editing.params.faces });
+  }
+  if (!editing) ui.plinesFor = null;
+  return ui.plines;
+}
+
+// The grooves found with these settings, worked out by the worker (for the red preview).
+let grooveView = { key: null, value: null, busy: false };
+function groovesNow() {
+  const o = lineOptions();
+  const key = `${buildToken}|${o.radius}|${o.min}`;
+  if (grooveView.key === key) return grooveView.value;
+  if (!grooveView.busy && result) {
+    grooveView.busy = true;
+    call('grooves', { radius: o.radius, min: o.min })
+      .then((v) => (grooveView = { key, value: v, busy: false }))
+      .catch((e) => {
+        grooveView = { key, value: { faces: null, count: 0, error: e.message }, busy: false };
+      })
+      .finally(() => {
+        if (ui.panel === 'panellines') renderPanel();
+      });
+  }
+  return null;
+}
+
+function panelLines(editing) {
+  const o = lineOptions(editing),
+    u = project.units;
+  const g = editing ? null : groovesNow();
+  const hollow = project.steps.some((s) => s.type === 'hollow' && s.enabled);
+  return `${head(editing ? 'Change panel lines' : 'Panel lines', 'Shallow panel lines vanish when printed small. Anvil finds the narrow grooves on the outside and makes them deeper. The grooves it found show in red.')}
+    ${editing ? '' : g ? `<div class="note">${g.count ? `${g.count.toLocaleString()} points in grooves found.` : 'No grooves found with these settings.'}</div>` : '<div class="note">Looking for grooves…</div>'}
+    <div class="g2"><span class="fx">Make them deep${numField('pl-depth', round(toUnits(o.depth, u), 2), u)}</span>
+      <span class="fx">Lines up to wide${numField('pl-width', round(toUnits(o.radius * 2, u), 2), u)}</span>
+      <span class="fx">Grooves from deep${numField('pl-min', round(toUnits(o.min, u), 3), u)}</span></div>
+    <div class="muted" style="font-size:12px">Found too much (a crease, a seam)? Raise "Grooves from deep", or select the lines you want with the Select tools and tick below.</div>
+    <label class="chk"><input type="checkbox" data-field="pl-sel" ${o.onlySel ? 'checked' : ''}${selectedCount || editing ? '' : ' disabled'}>Only in the selection${selectedCount ? ` (${selectedCount.toLocaleString()} triangles)` : ''}</label>
+    ${hollow ? '<div class="muted" style="font-size:12px">The body is hollow already: deeper lines make the wall thinner there. Do this before Hollow to keep the wall even.</div>' : ''}
+    <div class="row"><button class="btn primary sm" data-act="pl-apply"${!editing && g && !g.count ? ' disabled' : ''}>${icon('detail')}${editing ? 'Update step' : 'Deepen'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>`;
+}
+
+// Text: what to put on next, and the texts on the body.
+function textOptions() {
+  ui.text ??= { value: '23', font: TEXT_FONTS[0], height: round(result.stats.bounds.size[2] * 0.25, 1), depth: 0.4, mode: 'raise', angle: 0 };
+  return ui.text;
+}
+const textStep = () => project.steps.find((s) => s.type === 'text' && s.enabled) ?? null;
+const currentTexts = () => textStep()?.params.texts ?? [];
+function setTexts(texts) {
+  commit(() => {
+    const step = textStep();
+    if (!texts.length && step) project.steps = project.steps.filter((s) => s !== step);
+    else if (step) step.params = { texts };
+    else if (texts.length) {
+      const s = { id: newId(), type: 'text', enabled: true, params: { texts } };
+      const at = project.steps.findIndex((x) => x.type === 'hollow' && x.enabled);
+      if (at < 0) project.steps.push(s);
+      else project.steps.splice(at, 0, s);
+    }
+  });
+}
+
+function placeText(hit) {
+  const o = textOptions();
+  let traced;
+  try {
+    traced = traceText(o.value, o.font, o.height);
+  } catch (e) {
+    return toast(e.message, 'bad');
+  }
+  const n = hit.normal.toArray();
+  // Upright: up the car's side; on a roof or bonnet, the top of the letters to the front.
+  const up = Math.abs(n[2]) > 0.7 ? [-1, 0, 0] : [0, 0, 1];
+  const t = { label: o.value, font: o.font, height: o.height, at: hit.point.toArray().map((x) => round(x, 3)), normal: n.map((x) => round(x, 4)), up, angle: o.angle, mode: o.mode, depth: o.depth, polys: traced.polys };
+  const add = [t];
+  // The other side: in the same place, reading the right way round.
+  if (project.mirror && Math.abs(t.at[1]) > traced.width * 0.6) add.push({ ...t, at: [t.at[0], -t.at[1], t.at[2]], normal: [t.normal[0], -t.normal[1], t.normal[2]], flip: true });
+  setTexts([...currentTexts(), ...add]);
+  setPointer('look');
+}
+
+function panelText(editing) {
+  const o = textOptions(),
+    u = project.units;
+  const texts = (editing ?? textStep())?.params.texts ?? [];
+  const placing = ui.pointer === 'textplace';
+  return `${head('Text', 'Race numbers, names and letters, raised out of the body or cut into it, following its curve. Type the text, then click on the body where it goes.')}
+    <div class="f">Text<span class="num" style="width:100%"><input data-field="tx-value" type="text" value="${esc(o.value)}" style="font-family:var(--font-ui)"></span></div>
+    <div class="f">Font<select data-field="tx-font">${TEXT_FONTS.map((f) => `<option${f === o.font ? ' selected' : ''}>${esc(f)}</option>`).join('')}</select></div>
+    <span class="seg"><button data-act="tx-mode" data-v="raise" class="${o.mode === 'raise' ? 'on' : ''}">Raised</button><button data-act="tx-mode" data-v="cut" class="${o.mode === 'cut' ? 'on' : ''}">Cut in</button></span>
+    <div class="g2"><span class="fx">Height of the letters${numField('tx-height', round(toUnits(o.height, u), 2), u)}</span>
+      <span class="fx">${o.mode === 'cut' ? 'Cut in by' : 'Stands out by'}${numField('tx-depth', round(toUnits(o.depth, u), 2), u)}</span>
+      <span class="fx">Turned${numField('tx-angle', o.angle, '°')}</span></div>
+    <div class="muted" style="font-size:12px">Letter strokes thinner than your nozzle (or about 0.3 mm in resin) will not print: use a bold font and letters at least 4 mm high.${project.mirror ? ' Mirror is on: the other side gets the same text, reading the right way round.' : ''}</div>
+    <div class="row">${placing ? '<button class="btn sm" data-act="pointer" data-v="look">Cancel</button>' : `<button class="btn primary sm" data-act="pointer" data-v="textplace">${icon('text')}Place on the body</button>`}</div>
+    ${placing ? '<div class="note">Click on the body where the middle of the text goes.</div>' : ''}
+    ${texts.length ? `<div class="f">${texts.length} text${texts.length === 1 ? '' : 's'}<div class="plist">${texts
+      .map((t, i) => `<div class="prow"><span><b>${esc(t.label)}</b><small>${esc(t.font)} · ${fmtLen(t.height, u, 1)} · ${t.mode === 'cut' ? 'cut in' : 'raised'} ${fmtLen(t.depth, u, 2)}${t.flip ? ' · other side' : ''}</small></span><button class="btn sm icon ghost" data-act="tx-remove" data-v="${i}" title="Remove this text">${icon('trash')}</button></div>`)
+      .join('')}</div></div>` : ''}
+    ${editing ? stepWarnings(editing) : ''}`;
+}
+
+// ------------------------------------------------------------ variants
+
+function panelVariants() {
+  const vs = project.variants ?? [];
+  const optional = project.steps.filter((s) => OPTIONAL_STEPS.includes(s.type));
+  const states = new Map((result?.results ?? []).map((r) => [r.id, r]));
+  const card = (v, i) => {
+    const f = variantFactor(v);
+    return `<div class="pair"><div class="ph"><span class="num" style="width:100%"><input data-field="var-${i}-name" type="text" value="${esc(v.name)}" style="font-family:var(--font-ui)"></span><button class="btn sm icon ghost" data-act="var-remove" data-v="${i}" title="Remove this variant">${icon('trash')}</button></div>
+      <div class="row">Scale 1:${`<span class="num" style="width:64px"><input data-field="var-${i}-from" type="number" min="1" step="any" value="${v.from ?? ''}"></span>`} → 1:${`<span class="num" style="width:64px"><input data-field="var-${i}-to" type="number" min="1" step="any" value="${v.to ?? ''}"></span>`}<span class="muted" style="font-size:12px">${f === 1 ? 'same size' : `× ${round(f, 3)}`}</span></div>
+      ${optional.length ? `<div class="muted" style="font-size:12px">Leave out:</div>${optional
+        .map((s) => `<label class="chk"><input type="checkbox" data-field="var-${i}-off-${s.id}" ${v.off?.includes(s.id) ? 'checked' : ''}>${STEP_NAMES[s.type]}<span class="muted" style="font-size:11.5px">&nbsp;· ${stepDetail(s, states.get(s.id)?.info)}</span></label>`)
+        .join('')}` : ''}</div>`;
+  };
+  const scaled = vs.some((v) => variantFactor(v) !== 1);
+  return `${head('Variants', 'Other versions of this body, exported in one go: at another scale (1:32 → 1:24) and with or without parts such as the wing or the interior. Each comes out as its own STL file.')}
+    ${vs.map(card).join('')}
+    <div class="row"><button class="btn sm" data-act="var-add">${icon('plus')}Add a variant</button></div>
+    ${scaled ? `<div class="muted" style="font-size:12px">At another scale the body grows or shrinks with every place you set, while the wall, posts, tabs, pins, holes, LED sockets, panel line depth and text height stay their real size.${project.chassis ? ' The chassis grows with it: a real chassis at that scale will differ, so check it fits.' : ''}</div>` : ''}
+    <div class="row"><button class="btn primary sm" data-act="var-export"${vs.length && !ui.varBusy ? '' : ' disabled'}>${icon('export')}${ui.varBusy ? 'Exporting…' : `Export ${vs.length} variant${vs.length === 1 ? '' : 's'}`}</button></div>`;
+}
+
+async function exportVariants() {
+  const vs = project.variants ?? [];
+  if (!vs.length || ui.varBusy) return;
+  ui.varBusy = true;
+  renderPanel();
+  try {
+    for (const [i, v] of vs.entries()) {
+      toast(`Building ${v.name || `variant ${i + 1}`}…`);
+      const m = await call('variant', { steps: variantSteps(project.steps, v), fresh: i === 0 });
+      if (m.failed.length) toast(`${v.name}: ${m.failed.length} step${m.failed.length === 1 ? '' : 's'} could not be done: ${m.failed[0]}`, 'bad');
+      const name = `${fileName('stl').replace(/\.stl$/, '')} - ${(v.name || `variant ${i + 1}`).replace(/[\\/:*?"<>|]+/g, '-')}.stl`;
+      download(name, encodeSTL(m, `SlotForge Anvil · ${project.name} · ${v.name}`), 'model/stl');
+    }
+    toast(`${vs.length} variant${vs.length === 1 ? '' : 's'} exported.`);
+  } catch (e) {
+    toast(e.message, 'bad');
+  } finally {
+    ui.varBusy = false;
+    renderPanel();
+  }
+}
+
+// ------------------------------------------------------------ LED lights
+
+function lightOptions() {
+  ui.light ??= { size: 'led3', ...LIGHT_DEFAULTS };
+  return ui.light;
+}
+const lightsStep = () => project.steps.find((s) => s.type === 'lights' && s.enabled) ?? null;
+const currentLights = () => lightsStep()?.params.lights ?? [];
+function setLights(lights) {
+  commit(() => {
+    const step = lightsStep();
+    if (!lights.length && step) project.steps = project.steps.filter((s) => s !== step);
+    else if (step) step.params = { lights };
+    else if (lights.length) project.steps.push({ id: newId(), type: 'lights', enabled: true, params: { lights } });
+  });
+}
+
+function placeLight(hit) {
+  const o = lightOptions();
+  const n = hit.normal.toArray().map((x) => round(x, 4));
+  const at = hit.point.toArray().map((x) => round(x, 3));
+  const l = { at, normal: n, d: o.d, length: o.length, clearance: o.clearance, tube: o.tube, mode: o.mode, skin: o.skin };
+  const add = [l];
+  if (project.mirror && Math.abs(at[1]) > o.d) add.push({ ...l, at: [at[0], -at[1], at[2]], normal: [n[0], -n[1], n[2]] });
+  setLights([...currentLights(), ...add]);
+}
+
+function panelLights(editing) {
+  const o = lightOptions(),
+    u = project.units;
+  const lights = (editing ?? lightsStep())?.params.lights ?? [];
+  const placing = ui.pointer === 'lightplace';
+  const f = (key, label) => `<span class="fx">${label}${numField(`lt-${key}`, round(toUnits(o[key], u), 2), u)}</span>`;
+  return `${head('LED lights', 'Pockets for LEDs behind the headlights and taillights: a bore through the wall where the light shines out, and a socket inside that holds the LED straight. Click on a light to place one.')}
+    <div class="f">LED<span class="seg">${Object.entries(LED_SIZES).map(([k, s]) => `<button data-act="lt-size" data-v="${k}" class="${o.size === k ? 'on' : ''}">${s.name}</button>`).join('')}<button data-act="lt-size" data-v="own" class="${o.size === 'own' ? 'on' : ''}">Other</button></span></div>
+    <div class="g2">${f('d', 'LED diameter')}${f('length', 'LED length')}${f('clearance', 'Room round it')}${f('tube', 'Socket wall')}</div>
+    <div class="f">The light comes through<span class="seg"><button data-act="lt-mode" data-v="open" class="${o.mode === 'open' ? 'on' : ''}">An open hole</button><button data-act="lt-mode" data-v="window" class="${o.mode === 'window' ? 'on' : ''}">A thin window</button></span>
+      <span class="muted" style="font-weight:400;font-size:12px">${o.mode === 'open' ? 'Fill the hole with clear glue or a lens.' : 'A thin skin stays on the outside: print in clear or light resin so the light shows through.'}</span></div>
+    ${o.mode === 'window' ? `<div class="g2">${f('skin', 'Skin left on the outside')}</div>` : ''}
+    <div class="muted" style="font-size:12px">Place lights after Hollow: the socket goes on the inside of the finished wall. On a solid body the pocket is a blind hole as deep as the LED.${project.mirror ? ' Mirror is on: the other side gets one too.' : ''}</div>
+    <div class="row">${placing ? '<button class="btn sm" data-act="pointer" data-v="look">Done placing</button>' : `<button class="btn primary sm" data-act="pointer" data-v="lightplace">${icon('bulb')}Place lights</button>`}</div>
+    ${placing ? '<div class="note">Click on the middle of a headlight or taillight.</div>' : ''}
+    ${lights.length ? `<div class="f">${lights.length} light${lights.length === 1 ? '' : 's'}<div class="plist">${lights
+      .map((l, i) => `<div class="prow"><span><b>Light ${i + 1}</b><small>${fmtLen(l.d, u, 1)} LED · ${l.mode === 'window' ? 'thin window' : 'open'} · ${l.at[0] < (result.stats.bounds.min[0] + result.stats.bounds.max[0]) / 2 ? 'front' : 'rear'}, ${l.at[1] > 0 ? 'right' : 'left'}</small></span><button class="btn sm icon ghost" data-act="lt-remove" data-v="${i}" title="Remove this light">${icon('trash')}</button></div>`)
+      .join('')}</div></div>` : ''}
+    ${editing ? stepWarnings(editing) : lightsStep() ? stepWarnings(lightsStep()) : ''}`;
+}
+
+// ------------------------------------------------------------ interior
+
+// To start with: between the arches (or the middle third), a third of the way up.
+function interiorDefaults() {
+  const b = result.stats.bounds;
+  const a = lookups.arches.token === buildToken ? lookups.arches.value?.arches : null;
+  const L = b.size[0], H = b.size[2];
+  const x0 = a?.length === 2 ? a[0].x + a[0].width / 2 + 2 : b.min[0] + L * 0.35;
+  const x1 = a?.length === 2 ? a[1].x - a[1].width / 2 - 2 : b.min[0] + L * 0.7;
+  return { ...INTERIOR_DEFAULTS, x0: round(x0, 2), x1: round(x1, 2), z: round(b.min[2] + H * 0.3, 2), helmet: round(H * 0.22, 1) };
+}
+
+function interiorOptions(editing) {
+  if (editing && ui.interiorFor !== editing.id) {
+    ui.interiorFor = editing.id;
+    ui.interior = { ...INTERIOR_DEFAULTS, ...structuredClone(editing.params) };
+  }
+  if (!editing) ui.interiorFor = null;
+  ui.interior ??= interiorDefaults();
+  return ui.interior;
+}
+
+// The interior about to be added, in place (for the amber preview).
+let interiorView = { key: null, value: null };
+function interiorNow() {
+  const o = ui.interior;
+  if (!o || !result) return null;
+  const key = JSON.stringify([buildToken, o]);
+  if (interiorView.key === key) return interiorView.value;
+  let value;
+  try {
+    const p = interiorPieces({ positions: result.positions, indices: result.indices }, o);
+    value = { pieces: [...p.tray, ...p.ledges], warnings: p.warnings };
+  } catch (e) {
+    value = { pieces: [], warnings: [], error: e.message };
+  }
+  interiorView = { key, value };
+  return value;
+}
+
+function panelInterior(editing) {
+  const o = interiorOptions(editing),
+    u = project.units;
+  lookup('arches');
+  const pv = editing ? null : interiorNow();
+  const nose = result.stats.bounds.min[0];
+  const f = (key, label, v = o[key], unit = u) => `<span class="fx">${label}${numField(`in-${key}`, unit === '%' ? Math.round(v * 100) : round(toUnits(v, u), 2), unit)}</span>`;
+  const hollow = project.steps.some((s) => s.type === 'hollow' && s.enabled) || lookup('check')?.kind === 'shell';
+  return `${head(editing ? 'Change interior' : 'Interior', 'A flat tray in the cockpit, shaped to the inside of the side walls, with a driver and steering wheel if you like. It shows in amber before you add it.')}
+    ${hollow ? '' : '<div class="note warn">The tray fits between the inside walls: run Shell › Hollow first.</div>'}
+    <div class="g2">${f('x0', 'Starts behind the nose', o.x0 - nose)}${f('x1', 'Ends behind the nose', o.x1 - nose)}${f('z', 'Height of the tray')}${f('thick', 'Thickness')}</div>
+    <div class="f">Fitting<span class="seg"><button data-act="in-mount" data-v="ledges" class="${o.mount === 'ledges' ? 'on' : ''}">Clip-in, its own print</button><button data-act="in-mount" data-v="joined" class="${o.mount === 'joined' ? 'on' : ''}">Joined to the body</button></span>
+      <span class="muted" style="font-weight:400;font-size:12px">${o.mount === 'ledges' ? 'Small ledges grow on the side walls and the tray rests on them. The tray is set down beside the car to print on its own.' : 'The tray reaches into the side walls and prints with the body.'}</span></div>
+    ${o.mount === 'ledges' ? `<div class="g2">${f('gap', 'Gap to the walls')}</div>` : ''}
+    <label class="chk"><input type="checkbox" data-field="in-driver" ${o.driver ? 'checked' : ''}>A driver</label>
+    ${o.driver ? `<div class="f">Sits<span class="seg">${[['left', 'Left'], ['centre', 'Middle'], ['right', 'Right']].map(([k, n]) => `<button data-act="in-side" data-v="${k}" class="${o.side === k ? 'on' : ''}">${n}</button>`).join('')}</span></div>
+      <div class="g2">${f('seat', 'Along the tray', o.seat, '%')}${f('helmet', 'Helmet size')}</div>
+      <label class="chk"><input type="checkbox" data-field="in-wheel" ${o.wheel ? 'checked' : ''}>Steering wheel</label>` : ''}
+    ${pv?.error ? `<div class="note bad">${esc(pv.error)}</div>` : ''}
+    ${(pv?.warnings ?? []).map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
+    ${editing ? stepWarnings(editing) : ''}
+    <div class="row"><button class="btn primary sm" data-act="in-apply"${pv?.error ? ' disabled' : ''}>${icon('seat')}${editing ? 'Update step' : 'Add the interior'}</button>${editing ? '<button class="btn ghost sm" data-act="stop-edit">Done</button>' : ''}</div>`;
+}
+
+// ------------------------------------------------------------ tabs
+
+function tabsStep() {
+  return project.steps.find((s) => s.type === 'mounts' && s.enabled) ?? null;
+}
+const currentTabs = () => tabsStep()?.params.tabs ?? [];
+
+// The chassis edge the clips hook under: just inside the tyres, and the
+// underside of the chassis plate. Typed over when the chassis differs.
+function tabDefaults() {
+  const c = project.chassis;
+  if (c) {
+    const inner = Math.min(c.front.inOut - c.front.width / 2, c.rear.inOut - c.rear.width / 2);
+    return { edge: round(inner - 1.5, 2), catchZ: round(groundZ() + c.deck - Math.max(c.deck * 0.15, 0.5) / 2, 2) };
+  }
+  const b = result.stats.bounds;
+  return { edge: round(b.size[1] * 0.3, 2), catchZ: round(postBase() - 1, 2) };
+}
+
+function tabOptions() {
+  ui.tabs ??= { kind: 'screw', screw: { ...TAB_DEFAULTS.screw }, clip: { ...TAB_DEFAULTS.clip }, edge: null, catchZ: null };
+  const s = tabsStep();
+  if (s && ui.tabsFor !== s.id) {
+    ui.tabsFor = s.id;
+    Object.assign(ui.tabs, { screw: { ...TAB_DEFAULTS.screw, ...s.params.screw }, clip: { ...TAB_DEFAULTS.clip, ...s.params.clip }, edge: s.params.edge, catchZ: s.params.catchZ });
+  }
+  return ui.tabs;
+}
+
+function tabParams(tabs) {
+  const o = tabOptions(),
+    d = tabDefaults();
+  return { tabs, screw: { ...o.screw }, clip: { ...o.clip }, base: postBase(), edge: o.edge ?? d.edge, catchZ: o.catchZ ?? d.catchZ, ground: project.chassis ? round(groundZ(), 3) : -1e9 };
+}
+
+function setTabs(tabs) {
+  commit(() => {
+    const step = tabsStep();
+    if (!tabs.length && step) project.steps = project.steps.filter((s) => s !== step);
+    else if (step) step.params = tabParams(tabs);
+    else if (tabs.length) project.steps.push({ id: newId(), type: 'mounts', enabled: true, params: tabParams(tabs) });
+  });
+}
+const refreshTabs = () => (tabsStep() ? setTabs(currentTabs()) : renderPanel());
+
+function placeTab(hit) {
+  const o = tabOptions();
+  const x = round(hit.point.x, 2),
+    side = hit.point.y >= 0 ? 1 : -1;
+  const add = [{ kind: o.kind, x, side }];
+  if (project.mirror) add.push({ kind: o.kind, x, side: -side });
+  const width = o[o.kind].width;
+  const tabs = currentTabs();
+  if (add.some((p) => tabs.some((q) => q.side === p.side && Math.abs(q.x - p.x) < width))) return toast('There is already a tab there.', 'bad');
+  setTabs([...tabs, ...add]);
+}
+
+function panelTabs(editing) {
+  const o = tabOptions(),
+    u = project.units,
+    d = tabDefaults();
+  const step = editing ?? tabsStep();
+  const tabs = step?.params.tabs ?? [];
+  const info = step && result.results.find((r) => r.id === step.id);
+  const hollow = project.steps.some((s) => s.type === 'hollow' && s.enabled);
+  const placing = ui.pointer === 'tab';
+  const k = o[o.kind];
+  const f = (key, label) => `<span class="fx">${label}${numField(`tb-${o.kind}-${key}`, round(toUnits(k[key], u), 2), u)}</span>`;
+  const c = project.chassis;
+  return `${head('Tabs', 'Tabs on the inside of the side walls that hold the body on the chassis. Click on the body where a tab goes; with Mirror on, the other side gets one too.')}
+    ${hollow ? '' : '<div class="muted" style="font-size:12px">Tabs hold on to the inside of the side wall. Run Shell › Hollow first.</div>'}
+    <span class="seg"><button data-act="tab-kind" data-v="screw" class="${o.kind === 'screw' ? 'on' : ''}">Screw tab</button><button data-act="tab-kind" data-v="clip" class="${o.kind === 'clip' ? 'on' : ''}">Clip tab</button></span>
+    <div class="muted" style="font-size:12px">${o.kind === 'screw' ? `A flat tab sticking in from the wall at the height of the posts' bottom${c ? ' (on the chassis deck)' : ''}, with a hole for a screw from below.` : 'A tab down the wall with a hook at the bottom that snaps under the edge of the chassis. Flex the body sides to take it off.'}</div>
+    <div class="g2">${o.kind === 'screw' ? `${f('width', 'Width')}${f('reach', 'Reach in from the wall')}${f('thick', 'Thickness')}${f('hole', 'Hole')}${f('rib', 'Ribs above, high')}` : `${f('width', 'Width')}${f('height', 'Height above the hook')}${f('hook', 'Hook depth')}${f('hookHeight', 'Hook height')}${f('gap', 'Gap to the chassis edge')}`}</div>
+    ${o.kind === 'clip' ? `<div class="g2"><span class="fx">Chassis edge from the centre${numField('tb-edge', round(toUnits(o.edge ?? d.edge, u), 2), u)}</span><span class="fx">Underside of the chassis edge${numField('tb-catch', round(toUnits(o.catchZ ?? d.catchZ, u), 2), u)}</span></div>
+      <div class="muted" style="font-size:12px">${c ? 'Taken from your chassis to start with: measure yours and type over them.' : 'Set up a chassis and these follow its numbers.'}</div>` : ''}
+    <div class="row">${placing ? '<button class="btn sm" data-act="pointer" data-v="look">Done placing</button>' : `<button class="btn primary sm" data-act="pointer" data-v="tab">${icon('tab')}Place ${o.kind === 'screw' ? 'screw tabs' : 'clips'}</button>`}
+      ${tabs.length ? '<button class="btn sm ghost" data-act="tab-follow">Rebuild with these sizes</button>' : ''}</div>
+    ${placing ? '<div class="muted" style="font-size:12px">Click on the side of the body where the tab goes. The Side and Under views make it easy.</div>' : ''}
+    ${
+      tabs.length
+        ? `<div class="f">${tabs.length} tab${tabs.length === 1 ? '' : 's'}<div class="plist">${tabs
+            .map(
+              (t, i) =>
+                `<div class="prow"><span><b>${t.kind === 'screw' ? 'Screw tab' : 'Clip'} ${i + 1}</b><small>${fmtLen(t.x - (c ? c.frontX : result.stats.bounds.min[0]), u, 1)} behind the ${c ? 'front axle' : 'nose'} · ${t.side > 0 ? 'right' : 'left'}</small></span><button class="btn sm icon ghost" data-act="tab-remove" data-v="${i}" title="Remove this tab">${icon('trash')}</button></div>`,
+            )
+            .join('')}</div></div>
+      <div class="row"><button class="btn sm ghost danger" data-act="tab-clear">Remove all</button></div>`
+        : ''
+    }
+    ${(info?.info?.warnings ?? []).map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
+    ${info?.state === 'error' ? `<div class="note bad">${esc(info.error)}</div>` : ''}`;
 }
 
 // ------------------------------------------------------------ windows
@@ -2322,6 +2928,9 @@ function panelFinal() {
       else row('ok', 'Chassis fit', `${esc(c.name)}: arches and tyres line up.`);
     }
     row(c.clearance >= 0.5 ? 'ok' : 'warn', 'Ground clearance', `The body is ${fmtLen(c.clearance, u)} above the track.`, 'chassis', 'Change');
+    const cl = clearanceNow();
+    if (cl.parts.length) row('bad', 'Clearance', `The body hits the ${cl.parts.map((p) => p.label.toLowerCase()).join(', ')}.`, 'clearance', 'Show me');
+    else row('ok', 'Clearance', `Tyres, guide and chassis clear the body by ${fmtLen(clearGap(), u)} or more.`);
   }
   const ps = postsStep();
   if (!ps) row(c ? 'warn' : 'info', 'Posts', 'No body posts yet.', 'posts', 'Add posts');
@@ -2358,10 +2967,10 @@ function panelFinal() {
         (r) => `<div class="prow fc-${r.state}"><span class="dot ${r.state === 'ok' ? 'ok' : r.state === 'bad' ? 'bad' : r.state === 'warn' ? 'w' : 'no'}"></span><span><b>${r.title}</b><small>${r.text}</small></span>${r.tool ? `<button class="btn sm ghost" data-act="final-go" data-v="${r.tool}">${r.label}</button>` : ''}</div>`,
       )
       .join('')}</div>
-    <div class="row"><button class="btn primary sm" data-act="export">${icon('export')}Export STL</button>${buck.result ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export buck</button>` : ''}</div>`;
+    <div class="row"><button class="btn primary sm" data-act="export">${icon('export')}Export STL</button>${buck.result ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export buck</button>` : ''}<button class="btn sm ghost" data-act="tool" data-v="variants">${icon('export')}Variants…</button></div>`;
 }
 
-const TOOL_MENU = { fix: 'repair', openings: 'repair', parts: 'repair', solid: 'repair', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck' };
+const TOOL_MENU = { panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', fix: 'repair', openings: 'repair', parts: 'repair', solid: 'repair', rebuild: 'repair', symmetry: 'repair', clearance: 'chassis', tabs: 'posts', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck' };
 
 function stepDetail(step, info) {
   const p = step.params,
@@ -2369,9 +2978,11 @@ function stepDetail(step, info) {
   if (step.type === 'orient') return `front ${p.front}, roof ${p.up}${p.turn ? `, turned ${p.turn}°` : ''}`;
   if (step.type === 'scale') return `× ${round(p.factor, 4)}`;
   if (step.type === 'slice')
-    return `${AXIS_NAMES[p.axis].toLowerCase()} at ${fmtLen(p.at, u)}${p.tilt ? `, tilted ${p.tilt}° along the ${LEAN_NAMES[p.lean]}` : ''} · keep ${p.keep === 'both' ? 'both' : KEEP_NAMES[p.axis][p.keep].toLowerCase()}${p.cap ? ' · closed' : ''}`;
+    return `${AXIS_NAMES[p.axis].toLowerCase()} at ${fmtLen(p.at, u)}${p.tilt ? `, tilted ${p.tilt}° along the ${LEAN_NAMES[p.lean]}` : ''} · keep ${p.keep === 'both' ? 'both' : KEEP_NAMES[p.axis][p.keep].toLowerCase()}${p.cap ? ' · closed' : ''}${info?.glue ? ` · ${info.glue} glue tab${info.glue === 1 ? '' : 's'}` : ''}`;
   if (step.type === 'cutoff')
-    return `${p.cuts.length} cut${p.cuts.length === 1 ? '' : 's'}${p.mirror ? ', mirrored' : ''}${p.open ? ' · left open' : ''}${info?.changed ? ` · ${info.changed.toLocaleString()} triangles off` : ''}`;
+    return p.split
+      ? `split off, ${p.cuts.length} cut${p.cuts.length === 1 ? '' : 's'}${p.mirror ? ', mirrored' : ''}${info ? ` · ${info.pins} pin${info.pins === 1 ? '' : 's'}` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`
+      : `${p.cuts.length} cut${p.cuts.length === 1 ? '' : 's'}${p.mirror ? ', mirrored' : ''}${p.open ? ' · left open' : ''}${info?.changed ? ` · ${info.changed.toLocaleString()} triangles off` : ''}`;
   if (step.type === 'delete')
     return p.label === 'parts' ? `${p.parts} part${p.parts === 1 ? '' : 's'} removed` : `${runCount(p.faces).toLocaleString()} triangles${p.patch === 'smooth' ? ' · patched' : ''}`;
   if (step.type === 'repair') {
@@ -2393,6 +3004,11 @@ function stepDetail(step, info) {
   if (step.type === 'stretch')
     return p.axis === 'x' ? `${p.amount >= 0 ? 'longer' : 'shorter'} by ${fmtLen(Math.abs(p.amount), u)} between the arches` : `${p.amount >= 0 ? 'wider' : 'narrower'} by ${fmtLen(Math.abs(p.amount), u)}`;
   if (step.type === 'arches') return `${(p.which ?? []).join(' and ')} cut round the tyres${info?.walls ? ' · wall closed' : ''}`;
+  if (step.type === 'mounts') {
+    const n = (k) => p.tabs.filter((t) => t.kind === k).length;
+    return [[n('screw'), 'screw tab'], [n('clip'), 'clip']].filter(([c]) => c).map(([c, w]) => `${c} ${w}${c === 1 ? '' : 's'}`).join(', ') + (info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : '');
+  }
+  if (step.type === 'guidecut') return `${fmtLen(p.r, u, 1)} round, ${fmtLen(p.top - groundZ(), u, 1)} high${info && !info.removed ? ' · nothing in the way' : ''}${info?.walls ? ' · wall closed' : ''}`;
   if (step.type === 'smooth')
     return `${p.faces ? `${runCount(p.faces).toLocaleString()} selected triangles` : `${p.strokes.length} brush spot${p.strokes.length === 1 ? '' : 's'}`} · strength ${p.strength}${p.protect ? ' · inside only' : ''}`;
   if (step.type === 'addpart') return `${esc(p.name)} · ${p.join ? 'joined' : 'its own print'}${p.place?.pair ? ' · a pair' : ''}`;
@@ -2400,6 +3016,12 @@ function stepDetail(step, info) {
     return `${p.windows.length} window${p.windows.length === 1 ? '' : 's'}${info ? ` · ${info.cut} cut` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
   if (step.type === 'posts')
     return `${p.posts.length} × ${p.type?.name ?? 'post'}${p.length > 0 ? `, ${fmtLen(p.length, u, 1)} long` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
+  if (step.type === 'lights') return `${p.lights.length} LED${p.lights.length === 1 ? '' : 's'}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
+  if (step.type === 'interior') return `tray at ${fmtLen(p.z, u, 1)}${p.driver ? ' · driver' : ''} · ${p.mount === 'joined' ? 'joined' : 'clip-in'}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
+  if (step.type === 'panellines') return `${fmtLen(p.depth, u, 2)} deep${p.faces ? ' · in the selection' : ''}${info ? ` · ${info.moved.toLocaleString()} points` : ''}`;
+  if (step.type === 'text') return p.texts.map((t) => `${esc(t.label)}${t.mode === 'cut' ? ' cut in' : ' raised'}`).join(', ');
+  if (step.type === 'symmetrize') return `${p.keep} side kept and mirrored${Math.abs(p.at) > 0.001 ? ` · line at ${fmtLen(p.at, u, 2)}` : ''}`;
+  if (step.type === 'rebuild') return `${fmtLen(p.cell, u, 2)} grid${info ? ` · ${info.triangles.toLocaleString()} triangles` : ''}`;
   if (step.type === 'solid')
     return `${info ? `${info.removed.toLocaleString()} triangles of inner skin removed` : 'inner skin removed'}${p.bottom != null ? ` · flat bottom at ${fmtLen(p.bottom, u)}` : ''}`;
   if (step.type === 'fill') return `${p.loops.length} opening${p.loops.length === 1 ? '' : 's'} · ${p.mode}`;
@@ -2469,7 +3091,12 @@ function applyGuide() {
     viewport.planeGuide(s.axis, s.at, undefined, s.tilt && s.lean !== s.axis ? { tilt: s.tilt, lean: s.lean, pivot: s.pivot ?? slicePivot(s.lean) } : null);
   }
   else if (result && ui.solid?.flat && (editing ? editing.type === 'solid' : ui.panel === 'solid')) viewport.planeGuide('z', ui.solid.bottom);
+  else if (result && ui.sym && (editing ? editing.type === 'symmetrize' : ui.panel === 'symmetry')) viewport.planeGuide('y', ui.sym.at);
+  else if (result && ui.interior && !editing && ui.panel === 'interior') viewport.planeGuide('z', ui.interior.z);
   else viewport.planeGuide(null);
+  // Glue tabs or the interior about to be made, in amber.
+  const glueOwner = !editing && result ? (ui.panel === 'slice' ? 'slice' : ui.panel === 'cutoff' && ui.cutoff.split ? 'cut' : null) : null;
+  viewport.showPieces(glueOwner ? (glueNow(glueOwner)?.pieces ?? null) : !editing && ui.panel === 'interior' ? (interiorNow()?.pieces ?? null) : null);
   // Cut off: the planes with their handles, and the part that goes in red.
   const cutting = result && ((ui.panel === 'cutoff' && !ui.editStep) || editing?.type === 'cutoff');
   const s = ui.cutoff;
@@ -2477,6 +3104,12 @@ function applyGuide() {
   let pv = cutting && !editing && s.cuts.length ? cutoffPreviewNow() : null;
   // Make solid: the inner skin that goes, in red.
   if (!pv && result && ui.panel === 'solid' && !ui.editStep && lookups.solid.token === buildToken) pv = lookups.solid.value;
+  // Clearance: where the body comes too close to the chassis, in red.
+  if (!pv && result && project.chassis && ui.panel === 'clearance' && !ui.editStep) pv = clearanceNow();
+  // Panel lines: the grooves found, in red.
+  if (!pv && result && ui.panel === 'panellines' && !ui.editStep) pv = groovesNow();
+  // Symmetrize: the side that goes, in red.
+  if (!pv && result && ui.sym && ui.panel === 'symmetry' && !ui.editStep) pv = { faces: symmetryFaces() };
   if (pv?.faces) {
     viewport.paintSelection(pv.faces);
     ui.cutPainted = true;
@@ -2705,6 +3338,9 @@ canvas.addEventListener('pointerup', (e) => {
     else if (d.mode === 'replace') applyFaces([], 'replace');
   } else if ((ui.pointer === 'distance' || ui.pointer === 'wall') && hit) measureClick(hit);
   else if (ui.pointer === 'post' && hit) placePost(hit);
+  else if (ui.pointer === 'tab' && hit) placeTab(hit);
+  else if (ui.pointer === 'textplace' && hit) placeText(hit);
+  else if (ui.pointer === 'lightplace' && hit) placeLight(hit);
   else if (ui.pointer === 'cutplace' && hit) placeCut(hit);
 });
 
@@ -2765,7 +3401,7 @@ const actions = {
     if (v === 'openings') ui.closeLoops = new Set();
     if (v === 'fix') ui.fixOpts = null;
     if (v === 'solid') ui.solid = null;
-    if (['chassis', 'tyres', 'arches', 'stretch'].includes(v) && project.chassis) ui.look.chassis = true;
+    if (['chassis', 'tyres', 'clearance', 'arches', 'stretch'].includes(v) && project.chassis) ui.look.chassis = true;
     if (v === 'select' && !['brush', 'lasso', 'connected'].includes(ui.pointer)) setPointer('brush');
     else if (v === 'hammer') setPointer('hammer');
     else if (v === 'posts') setPointer('post');
@@ -2774,7 +3410,8 @@ const actions = {
       setPointer('paint');
       if (!ui.look.thickness) actions.look('thickness');
     }
-    if (!['select', 'paint', 'hammer', 'posts'].includes(v) && ui.pointer !== 'look' && !['distance', 'wall'].includes(ui.pointer)) setPointer('look');
+    if (!['select', 'paint', 'hammer', 'posts', 'tabs'].includes(v) && ui.pointer !== 'look' && !['distance', 'wall'].includes(ui.pointer)) setPointer('look');
+    if (v === 'tabs' && ui.pointer !== 'tab') setPointer('look');
     if (v === 'cutoff' && !ui.cutoff.cuts.length) setPointer('cutplace');
     if ((v === 'select' || v === 'smooth') && protectActive()) lookup('skins');
     if (v === 'posts' && project.chassis) ui.look.chassis = true;
@@ -2937,6 +3574,62 @@ const actions = {
     renderPanel();
     applyGuide();
   },
+  'glue-side'(v) {
+    const [owner, side] = v.split('|');
+    const g = glueOf(owner);
+    if (g) g.on = side;
+    renderPanel();
+  },
+  'glue-spread'(owner) {
+    const g = glueOf(owner);
+    if (!g) return;
+    const n = Math.min(24, Math.max(1, Math.round(g.count ?? 4)));
+    if (owner === 'cut') {
+      const k = ui.cutoff.active;
+      g.tabs = [...g.tabs.filter((t) => (t.k ?? 0) !== k), ...spreadTabs(n).map((t) => ({ ...t, k }))];
+    } else g.tabs = spreadTabs(n);
+    renderPanel();
+  },
+  'glue-add'(owner) {
+    const g = glueOf(owner);
+    if (!g) return;
+    const k = owner === 'cut' ? ui.cutoff.active : undefined;
+    // In the middle of the biggest gap between the tabs (round the cut).
+    const ss = g.tabs.filter((t) => owner !== 'cut' || (t.k ?? 0) === k).map((t) => t.s).sort((a, b) => a - b);
+    let s = 0.5;
+    if (ss.length) {
+      let best = -1;
+      ss.forEach((a, i) => {
+        const b = i + 1 < ss.length ? ss[i + 1] : ss[0] + 1;
+        if (b - a > best) (best = b - a), (s = ((a + b) / 2) % 1);
+      });
+    }
+    g.tabs.push({ s: round(s, 4), ...(k != null ? { k } : {}) });
+    renderPanel();
+  },
+  'glue-remove'(v) {
+    const [owner, i] = v.split('|');
+    const g = glueOf(owner);
+    if (g) g.tabs.splice(Number(i), 1);
+    renderPanel();
+  },
+  'cut-action'(v) {
+    const s = ui.cutoff;
+    if (v === 'split') s.split = s.splitLast ?? { ...PIN_DEFAULTS };
+    else {
+      if (s.split) s.splitLast = s.split;
+      s.split = null;
+    }
+    renderPanel();
+  },
+  'cut-pins'(v) {
+    if (ui.cutoff.split) ui.cutoff.split.count = Number(v);
+    renderPanel();
+  },
+  'cut-pin-on'(v) {
+    if (ui.cutoff.split) ui.cutoff.split.on = v;
+    renderPanel();
+  },
   'cut-apply'() {
     if (!ui.cutoff.cuts.length) return;
     addOrUpdateStep('cutoff', cutoffParams());
@@ -2990,6 +3683,88 @@ const actions = {
     if (!list || !ui.closeLoops.size) return;
     addOrUpdateStep('fill', { loops: [...ui.closeLoops].sort((a, b) => a - b), mode: ui.fillMode, count: list.length });
     ui.closeLoops = new Set();
+  },
+  'var-add'() {
+    const n = (project.variants ?? []).length + 1;
+    commit(() => (project.variants = [...(project.variants ?? []), { id: newId(), name: n === 1 ? '1-24' : `Variant ${n}`, from: n === 1 ? 32 : null, to: n === 1 ? 24 : null, off: [] }]), false);
+  },
+  'var-remove'(v) {
+    commit(() => (project.variants = (project.variants ?? []).filter((_, i) => i !== Number(v))), false);
+  },
+  'var-export': () => exportVariants(),
+  'lt-size'(v) {
+    const o = lightOptions();
+    o.size = v;
+    if (LED_SIZES[v]) Object.assign(o, { d: LED_SIZES[v].d, length: LED_SIZES[v].length });
+    renderPanel();
+  },
+  'lt-mode'(v) {
+    lightOptions().mode = v;
+    renderPanel();
+  },
+  'lt-remove'(v) {
+    setLights(currentLights().filter((_, i) => i !== Number(v)));
+  },
+  'in-mount'(v) {
+    interiorOptions().mount = v;
+    renderPanel();
+  },
+  'in-side'(v) {
+    interiorOptions().side = v;
+    renderPanel();
+  },
+  'in-apply'() {
+    addOrUpdateStep('interior', structuredClone(interiorOptions()));
+  },
+  'pl-apply'() {
+    const o = lineOptions();
+    let faces = null;
+    if (o.onlySel && selectedCount) {
+      const list = [];
+      for (let f = 0; f < selection.length; f++) if (selection[f]) list.push(f);
+      faces = encodeRuns(list);
+    }
+    addBeforeHollow('panellines', { depth: round(o.depth, 3), radius: round(o.radius, 3), min: round(o.min, 4), ...(faces ? { faces } : {}) });
+  },
+  'tx-mode'(v) {
+    textOptions().mode = v;
+    renderPanel();
+  },
+  'tx-remove'(v) {
+    setTexts(currentTexts().filter((_, i) => i !== Number(v)));
+  },
+  'sym-keep'(v) {
+    symOptions().keep = v;
+    renderPanel();
+  },
+  'sym-best'() {
+    const r = lookup('symmetry');
+    if (!r) return;
+    symOptions().at = round(r.best, 3);
+    renderPanel();
+  },
+  'sym-apply'() {
+    const o = symOptions();
+    addOrUpdateStep('symmetrize', { keep: o.keep, at: round(o.at, 4) });
+  },
+  'rebuild-detail'(v) {
+    ui.rebuild.detail = v;
+    renderPanel();
+  },
+  'rebuild-apply'() {
+    const editing = project.steps.find((s) => s.id === ui.editStep && s.type === 'rebuild');
+    // The grid from the model's size where the step goes (before any shaping).
+    const cell = round(rebuildCell(result.stats.bounds, ui.rebuild.detail), 4);
+    if (editing) return addOrUpdateStep('rebuild', { cell });
+    commit(() => {
+      const early = ['orient', 'scale', 'repair', 'fill', 'delete', 'reduce'];
+      let at = 0;
+      while (at < project.steps.length && early.includes(project.steps[at].type)) at++;
+      const step = { id: newId(), type: 'rebuild', enabled: true, params: { cell } };
+      project.steps.splice(at, 0, step);
+      ui.editStep = step.id;
+    });
+    toast('Rebuilding the model… this can take a while on fine detail.');
   },
   'solid-apply'() {
     const s = ui.solid;
@@ -3155,6 +3930,33 @@ const actions = {
     if (!which.length) return;
     addBeforeHollow('arches', { cuts: which.map((k) => archCircle(k, o.gap)), which });
   },
+  'clear-arch'(v) {
+    ui.editStep = null;
+    actions['arch-cut'](v);
+    // Stay on the check, to see the result.
+    ui.editStep = null;
+  },
+  'clear-guide'() {
+    const c = project.chassis;
+    if (!c) return;
+    const g = guideZone(c, groundZ()),
+      gap = clearGap();
+    ui.editStep = null;
+    addBeforeHollow('guidecut', { x: round(g.x, 3), y: 0, r: round(g.r + gap, 3), top: round(g.top + gap, 3) });
+    ui.editStep = null;
+    toast('Cut room for the guide.');
+  },
+  'clear-thin'(key) {
+    const p = clearanceNow().parts.find((x) => x.key === key);
+    const step = hollowStep();
+    if (!p || !step) return;
+    const wall = thinTo(p);
+    const spot = { at: p.at.map((x) => round(x, 3)), radius: round(p.radius * 1.5 + 1, 2), wall };
+    const strokes = [spot];
+    if (project.mirror && Math.abs(spot.at[1]) > spot.radius * 0.25) strokes.push({ ...spot, at: [spot.at[0], -spot.at[1], spot.at[2]] });
+    addStrokes(strokes);
+    toast(`Thinned the wall to ${fmtLen(wall, project.units, 2)} where the chassis touches.`);
+  },
   'arch-flare'() {
     const o = archOptions();
     const a = lookup('arches');
@@ -3293,6 +4095,17 @@ const actions = {
     refreshPosts();
   },
   'post-follow': () => refreshPosts(),
+  'tab-kind'(v) {
+    tabOptions().kind = v;
+    renderPanel();
+  },
+  'tab-remove'(v) {
+    setTabs(currentTabs().filter((_, i) => i !== Number(v)));
+  },
+  'tab-clear'() {
+    setTabs([]);
+  },
+  'tab-follow': () => refreshTabs(),
   'post-remove'(v) {
     setPosts(currentPosts().filter((_, i) => i !== Number(v)));
   },
@@ -3469,6 +4282,13 @@ document.addEventListener('input', (e) => {
   const f = e.target.dataset?.field;
   if (!f) return;
   const v = Number(e.target.value);
+  // Sliding a glue tab: it moves in the view as you go.
+  if (/^glue-(slice|cut)-pos-\d+$/.test(f)) {
+    const [, owner, , i] = f.split('-');
+    const g = glueOf(owner);
+    if (g?.tabs[Number(i)]) g.tabs[Number(i)].s = v / 1000;
+    return applyGuide();
+  }
   if (f === 'section-at') {
     ui.section.at = v;
     $('#section-val').textContent = fmtLen(v, project.units);
@@ -3636,6 +4456,112 @@ document.addEventListener('change', (e) => {
     if (c && v > 0) c[f === 'cut-w' ? 'w' : 'h'] = round(fromUnits(v, u), 4);
     renderPanel();
     return applyGuide();
+  } else if (f.startsWith('var-')) {
+    const [, i, key, id] = f.split('-');
+    const vs = structuredClone(project.variants ?? []);
+    const v = vs[Number(i)];
+    if (!v) return;
+    if (key === 'name') v.name = e.target.value.trim() || v.name;
+    else if (key === 'from' || key === 'to') {
+      const n = parseFloat(e.target.value);
+      v[key] = n > 0 ? n : null;
+    } else if (key === 'off') {
+      const off = new Set(v.off ?? []);
+      if (e.target.checked) off.add(id);
+      else off.delete(id);
+      v.off = [...off];
+    }
+    commit(() => (project.variants = vs), false);
+    return;
+  } else if (f.startsWith('lt-')) {
+    const o = lightOptions();
+    const key = f.slice(3);
+    const v = fromUnits(parseFloat(e.target.value), project.units);
+    if (!Number.isFinite(v) || v < 0 || (v === 0 && key !== 'clearance')) return;
+    o[key] = v;
+    if (key === 'd' || key === 'length') o.size = 'own';
+    return renderPanel();
+  } else if (f.startsWith('in-')) {
+    const o = interiorOptions();
+    const key = f.slice(3);
+    if (key === 'driver' || key === 'wheel') o[key] = e.target.checked;
+    else {
+      const raw = parseFloat(e.target.value);
+      if (!Number.isFinite(raw)) return;
+      const nose = result.stats.bounds.min[0];
+      if (key === 'seat') o.seat = Math.min(1, Math.max(0, raw / 100));
+      else if (key === 'x0' || key === 'x1') o[key] = round(nose + fromUnits(raw, project.units), 3);
+      else {
+        const v = fromUnits(raw, project.units);
+        if (key !== 'z' && !(v > 0) && !(key === 'gap' && v === 0)) return;
+        o[key] = v;
+      }
+    }
+    return renderPanel();
+  } else if (f.startsWith('pl-')) {
+    const o = lineOptions();
+    if (f === 'pl-sel') o.onlySel = e.target.checked;
+    else {
+      const v = fromUnits(parseFloat(e.target.value), project.units);
+      if (!(v > 0)) return;
+      if (f === 'pl-depth') o.depth = v;
+      if (f === 'pl-width') o.radius = v / 2;
+      if (f === 'pl-min') o.min = v;
+    }
+    return renderPanel();
+  } else if (f.startsWith('tx-')) {
+    const o = textOptions();
+    if (f === 'tx-value') o.value = e.target.value;
+    else if (f === 'tx-font') o.font = e.target.value;
+    else if (f === 'tx-angle') {
+      const v = Number(e.target.value);
+      if (Number.isFinite(v)) o.angle = v;
+    } else {
+      const v = fromUnits(parseFloat(e.target.value), project.units);
+      if (!(v > 0)) return;
+      if (f === 'tx-height') o.height = v;
+      if (f === 'tx-depth') o.depth = v;
+    }
+    return;
+  } else if (f.startsWith('glue-')) {
+    const [, owner, key, i] = f.split('-');
+    if (key === 'on') {
+      setGlue(owner, e.target.checked ? { on: owner === 'slice' ? 'below' : 'body', ...GLUE_DEFAULTS, count: 4, tabs: spreadTabs(4).map((t) => (owner === 'cut' ? { ...t, k: ui.cutoff.active } : t)) } : null);
+      return renderPanel();
+    }
+    const g = glueOf(owner);
+    if (!g) return;
+    if (key === 'pos') {
+      g.tabs[Number(i)].s = Number(e.target.value) / 1000;
+      return renderPanel();
+    }
+    const v = key === 'count' ? Number(e.target.value) : fromUnits(parseFloat(e.target.value), project.units);
+    if (!Number.isFinite(v) || v < 0 || (v === 0 && key !== 'clearance')) return;
+    g[key] = v;
+    return renderPanel();
+  } else if (f.startsWith('cut-pin-')) {
+    const v = fromUnits(parseFloat(e.target.value), project.units);
+    const key = f.slice(8);
+    if (!ui.cutoff.split || !Number.isFinite(v) || v < 0 || (v === 0 && key !== 'clearance' && key !== 'gap')) return;
+    ui.cutoff.split[key] = v;
+    return;
+  } else if (f === 'sym-at') {
+    const v = fromUnits(parseFloat(e.target.value), project.units);
+    if (Number.isFinite(v)) symOptions().at = v;
+    return applyGuide();
+  } else if (f.startsWith('tb-')) {
+    const o = tabOptions();
+    const v = fromUnits(parseFloat(e.target.value), project.units);
+    if (!Number.isFinite(v)) return;
+    if (f === 'tb-edge') o.edge = v;
+    else if (f === 'tb-catch') o.catchZ = v;
+    else {
+      const [, kind, key] = f.split('-');
+      if (v < 0 || (v === 0 && key !== 'rib' && key !== 'hole' && key !== 'gap')) return;
+      o[kind][key] = v;
+    }
+    // Tabs already placed follow the new sizes.
+    return refreshTabs();
   } else if (f === 'solid-flat') {
     ui.solid.flat = e.target.checked;
     renderPanel();
@@ -3893,6 +4819,7 @@ if (devOpen) {
           chassis: saved.chassis ?? null,
           chassisMesh: saved.chassisMesh ?? null,
           buck: saved.buck ?? null,
+          variants: saved.variants ?? [],
           parts: saved.parts ?? {},
           protect: saved.protect !== false,
           source: saved.source,

@@ -94,9 +94,114 @@ function closeCylinderCut(mesh, c) {
   return capLoops(mesh, loops, flatten, true);
 }
 
+// Room for the guide: remove the body inside a round zone round the guide
+// post (x, y), from below up to `top`. Where that cuts a shell's wall, the
+// wall is closed along the cut.
+export function applyGuideCut(mesh, { x, y = 0, r, top, closeWalls = true }) {
+  if (!(r > 0) || !Number.isFinite(x) || !Number.isFinite(top)) throw Error('The guide cut is damaged. Remove the step and cut again.');
+  const out = clip(mesh, (p) => Math.min(r - Math.hypot(p[0] - x, p[1] - y), top - p[2]));
+  if (!out.removed) return { positions: mesh.positions, indices: mesh.indices, info: { removed: 0, walls: 0 } };
+  let m = out,
+    walls = 0;
+  if (closeWalls) {
+    const closed = closeCupCut(m, { x, y, r, top });
+    m = closed.mesh;
+    walls = closed.capped;
+  }
+  return { positions: m.positions, indices: m.indices, info: { removed: out.removed, walls } };
+}
+
+// The cut surface of the guide zone is a cup upside down: its round side and
+// its flat top. Laid flat like a squashed cup, the top stays as it is and the
+// side folds out round it (lower down = further out), with no seam, so a wall
+// cut that runs over both, or right round the zone, still lies flat.
+function closeCupCut(mesh, { x, y, r, top }) {
+  const P = mesh.positions;
+  const { twins } = pairEdges(mesh.indices, P.length / 3, P);
+  const tol = r * 1e-4 + 1e-4;
+  const onCut = (v) => {
+    const d = Math.hypot(P[v * 3] - x, P[v * 3 + 1] - y), z = P[v * 3 + 2];
+    return (Math.abs(d - r) < tol && z <= top + tol) || (Math.abs(z - top) < tol && d <= r + tol);
+  };
+  const loops = boundaryLoops(mesh.indices, twins).filter((l) => l.every(onCut));
+  if (!loops.length) return { mesh, capped: 0 };
+  const flatten = (v) => {
+    const dx = P[v * 3] - x, dy = P[v * 3 + 1] - y, z = P[v * 3 + 2];
+    if (Math.abs(z - top) < tol) return new Vector2(dx, dy);
+    const d = Math.hypot(dx, dy) || 1;
+    const out = r + (top - z);
+    return new Vector2((dx / d) * out, (dy / d) * out);
+  };
+  return capLoops(mesh, loops, flatten, true);
+}
+
+// A long edge can run right through the region a cut removes with both its
+// ends outside it (the thin triangles that close a wall along a floor cut).
+// The cut only sees the ends, so split such edges first, in halves, until
+// every edge that passes through the region has an end in it.
+function refineFor(mesh, f, rounds = 8) {
+  let pos = Array.from(mesh.positions),
+    tri = Array.from(mesh.indices);
+  const P = (v) => [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]];
+  const crosses = (a, b) => {
+    const A = P(a), B = P(b);
+    const fa = f(A) > 0, fb = f(B) > 0;
+    if (fa || fb) return false; // a corner is in the region: the cut sees it
+    for (let k = 1; k < 8; k++) {
+      const t = k / 8;
+      if (f(A.map((x, c) => x + t * (B[c] - x))) > 0) return true;
+    }
+    return false;
+  };
+  for (let round = 0; round < rounds; round++) {
+    const mid = new Map();
+    const key = (a, b) => (a < b ? `${a},${b}` : `${b},${a}`);
+    for (let i = 0; i < tri.length; i += 3)
+      for (let k = 0; k < 3; k++) {
+        const a = tri[i + k], b = tri[i + ((k + 1) % 3)];
+        const kk = key(a, b);
+        if (mid.has(kk)) continue;
+        mid.set(kk, crosses(a, b) ? -2 : -1);
+      }
+    let any = false;
+    for (const [kk, v] of mid) {
+      if (v !== -2) continue;
+      const [a, b] = kk.split(',').map(Number);
+      const id = pos.length / 3;
+      pos.push(...P(a).map((x, c) => (x + P(b)[c]) / 2));
+      mid.set(kk, id);
+      any = true;
+    }
+    if (!any) break;
+    const out = [];
+    for (let i = 0; i < tri.length; i += 3) {
+      const v = [tri[i], tri[i + 1], tri[i + 2]];
+      const m = [0, 1, 2].map((k) => mid.get(key(v[k], v[(k + 1) % 3])));
+      const split = m.map((x) => x >= 0);
+      const n = split.filter(Boolean).length;
+      if (!n) out.push(...v);
+      else if (n === 3) out.push(v[0], m[0], m[2], m[0], v[1], m[1], m[2], m[1], v[2], m[0], m[1], m[2]);
+      else if (n === 1) {
+        const k = split.indexOf(true);
+        const a = v[k], b = v[(k + 1) % 3], c = v[(k + 2) % 3], x = m[k];
+        out.push(a, x, c, x, b, c);
+      } else {
+        // Two edges split: the corner between them gets its own triangle.
+        const k = split.indexOf(false); // edge v[k]→v[k+1] stays whole
+        const a = v[k], b = v[(k + 1) % 3], c = v[(k + 2) % 3];
+        const mb = m[(k + 1) % 3], mc = m[(k + 2) % 3]; // on b→c and c→a
+        out.push(c, mc, mb, a, b, mb, a, mb, mc);
+      }
+    }
+    tri = out;
+  }
+  return { positions: Float32Array.from(pos), indices: Uint32Array.from(tri) };
+}
+
 // Keep the part of the mesh where f(p) <= 0. Triangles crossing the surface
 // f = 0 are clipped, with the crossing found along each edge by bisection.
 export function clip(mesh, f) {
+  ({ positions: mesh.positions, indices: mesh.indices } = refineFor(mesh, f));
   const p = mesh.positions,
     idx = mesh.indices;
   const V = p.length / 3;
