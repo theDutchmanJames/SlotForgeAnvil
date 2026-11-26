@@ -195,6 +195,9 @@ export function capLoops(mesh, loops, flatten, walls = false) {
   // How deep each outline sits inside the others: even = an outer edge, odd = a hole.
   const depth = flat.map((pts, n) => flat.filter((o, m) => m !== n && Math.abs(area(o)) > Math.abs(area(pts)) && inside(pts[0], o)).length);
   const faces = [];
+  const extra = []; // new corners (a fan's middle), after the mesh's own
+  const P = mesh.positions;
+  const V0 = P.length / 3;
   let capped = 0;
   flat.forEach((outer, n) => {
     if (depth[n] % 2) return;
@@ -206,17 +209,95 @@ export function capLoops(mesh, loops, flatten, walls = false) {
     const tris = keepAllPoints(ShapeUtils.triangulateShape(contour, holePts), [contour.length, ...holePts.map((h) => h.length)]);
     // The cap runs the way its outline asks (boundaryLoops gives that order).
     const want = Math.sign(area(contour));
+    const all = [...contour, ...holePts.flat()];
+    const mine = [];
     for (const [a, b, c] of tris) {
-      const all = [...contour, ...holePts.flat()];
       const s = (all[b].x - all[a].x) * (all[c].y - all[a].y) - (all[b].y - all[a].y) * (all[c].x - all[a].x);
-      if (Math.sign(s) === want || s === 0) faces.push(ids[a], ids[b], ids[c]);
-      else faces.push(ids[a], ids[c], ids[b]);
+      if (Math.sign(s) === want || s === 0) mine.push(ids[a], ids[b], ids[c]);
+      else mine.push(ids[a], ids[c], ids[b]);
     }
+    // A hole added by the caller (a pin hole) may run either way round: for
+    // the fallback, turn it to run against the outline, as a hole does.
+    const rings = [loops[n], ...holes.map((m) => (Math.sign(area(flat[m])) === want ? [...loops[m]].reverse() : loops[m]))];
+    if (closes(mine, rings)) return faces.push(...mine);
+    // An outline that crosses itself (where a hollowed body's skins pass
+    // through each other) is not filled whole by the triangulation. Close it
+    // in a way that always closes, whatever its shape: wound by the outline's
+    // own order, so it fits the surface round it.
+    if (rings.length === 1) {
+      const ring = rings[0];
+      const mid = V0 + extra.length / 3;
+      for (let k = 0; k < 3; k++) extra.push(ring.reduce((s, v) => s + P[v * 3 + k], 0) / ring.length);
+      for (let i = 0; i < ring.length; i++) faces.push(mid, ring[i], ring[(i + 1) % ring.length]);
+    } else if (rings.length === 2) faces.push(...zipRings(P, rings[0], rings[1]));
+    else faces.push(...mine);
   });
   const idx = new Uint32Array(mesh.indices.length + faces.length);
   idx.set(mesh.indices);
   idx.set(faces, mesh.indices.length);
-  return { mesh: { positions: mesh.positions, indices: idx }, capped };
+  let positions = mesh.positions;
+  if (extra.length) {
+    positions = new Float32Array(P.length + extra.length);
+    positions.set(P);
+    positions.set(extra, P.length);
+  }
+  return { mesh: { positions, indices: idx }, capped };
+}
+
+// Does this patch close the outlines exactly: every outline edge used once,
+// all of an outline the same way round, every other edge shared by two of
+// its triangles?
+function closes(tris, rings) {
+  const count = new Map();
+  const key = (a, b) => `${a}>${b}`;
+  for (let f = 0; f < tris.length; f += 3)
+    for (let k = 0; k < 3; k++) {
+      const kk = key(tris[f + k], tris[f + ((k + 1) % 3)]);
+      count.set(kk, (count.get(kk) ?? 0) + 1);
+    }
+  const rim = new Set();
+  for (const r of rings) {
+    // The way round the patch uses this outline: from its first edge.
+    const fwd = count.get(key(r[0], r[1 % r.length])) === 1;
+    for (let i = 0; i < r.length; i++) {
+      const [a, b] = fwd ? [r[i], r[(i + 1) % r.length]] : [r[(i + 1) % r.length], r[i]];
+      const kk = key(a, b);
+      if (count.get(kk) !== 1) return false;
+      rim.add(kk);
+    }
+  }
+  for (const [kk, n] of count) {
+    if (n !== 1) return false;
+    if (rim.has(kk)) continue;
+    const [a, b] = kk.split('>');
+    if (count.get(key(b, a)) !== 1) return false;
+  }
+  return true;
+}
+
+// A strip between an outer outline and the one hole in it, both in the order
+// a patch runs (the region on their left). They run opposite ways round, so
+// the hole is walked backwards; each step takes the shorter new edge.
+function zipRings(P, outer, hole) {
+  const d2 = (a, b) => (P[a * 3] - P[b * 3]) ** 2 + (P[a * 3 + 1] - P[b * 3 + 1]) ** 2 + (P[a * 3 + 2] - P[b * 3 + 2]) ** 2;
+  let j0 = 0;
+  for (let j = 1; j < hole.length; j++) if (d2(outer[0], hole[j]) < d2(outer[0], hole[j0])) j0 = j;
+  const out = [];
+  const no = outer.length, nh = hole.length;
+  let i = 0, j = 0; // steps taken on each
+  while (i < no || j < nh) {
+    const o = outer[i % no], o1 = outer[(i + 1) % no];
+    const h = hole[(((j0 - j) % nh) + nh) % nh], h1 = hole[(((j0 - j - 1) % nh) + nh) % nh];
+    const stepOuter = j >= nh || (i < no && d2(o1, h) <= d2(o, h1));
+    if (stepOuter) {
+      out.push(o, o1, h);
+      i++;
+    } else {
+      out.push(h1, h, o);
+      j++;
+    }
+  }
+  return out;
 }
 
 // ------------------------------------------------------------ add a part

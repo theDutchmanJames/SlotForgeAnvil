@@ -59,6 +59,27 @@ test('wheel arches cut through a shell close the wall round the cut', () => {
   assert.ok(out.info.walls >= 2);
 });
 
+test('closing a cut whose outline crosses itself (skins through each other) still closes it', async () => {
+  const { capPlane } = await import('../src/geometry/finish.js');
+  // A tube, open at the top (z = 10), whose cross-section is a figure eight.
+  const ring = [[0, 0], [10, 6], [10, 0], [0, 6]]; // crosses itself between the 2nd and 4th side
+  const N = ring.length;
+  const pos = [], idx = [];
+  for (const z of [0, 10]) for (const [x, y] of ring) pos.push(x, y, z);
+  pos.push(5, 3, 0); // the bottom's middle
+  for (let i = 0; i < N; i++) {
+    const j = (i + 1) % N;
+    idx.push(i, j, N + j, i, N + j, N + i); // the sides
+    idx.push(2 * N, j, i); // the bottom, a fan
+  }
+  const tube = { positions: Float32Array.from(pos), indices: Uint32Array.from(idx) };
+  assert.equal(meshStats(tube).openEdges, N, 'open at the top only');
+  const c = capPlane(tube, 'z', 10);
+  const st = meshStats(c.mesh);
+  assert.equal(st.openEdges, 0);
+  assert.equal(st.faultyEdges, 0);
+});
+
 test('slice: a closed cut through a shell is a ring', () => {
   const out = applySlice(closedShell(), { axis: 'x', at: 50, keep: 'below', cap: true, walls: true });
   assert.equal(meshStats(out).openEdges, 0);

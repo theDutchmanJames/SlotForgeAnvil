@@ -216,7 +216,12 @@ function insideText(polys, x, y) {
 // texts: [{ at, normal, up, angle, flip, polys (outlines in mm round the
 // middle), mode: 'raise' | 'cut', depth }]. Each text moves the outside of
 // the body under it out (raise) or in (cut) by its depth.
-export function applyText(mesh, { texts = [], grain = 0.3, edge = 0.05 }) {
+// grain: how fine the body's triangles under the letters must be at least, so
+// none can hold a whole letter part unseen (from the letters' size unless
+// given). edge: how fine along the outline, which is how steep the letters'
+// sides come out (0.1 mm: steeper than any printer shows). Only edges that
+// cross the outline are made that fine: inside a letter, all moves together.
+export function applyText(mesh, { texts = [], grain = null, edge = 0.1 }) {
   let m = mesh;
   const warnings = [];
   let moved = 0;
@@ -227,7 +232,9 @@ export function applyText(mesh, { texts = [], grain = 0.3, edge = 0.05 }) {
     const polys = t.flip ? t.polys.map((r) => r.map(([x, y]) => [-x, y])) : t.polys;
     let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
     for (const r of polys) for (const [x, y] of r) (lo = [Math.min(lo[0], x), Math.min(lo[1], y)]), (hi = [Math.max(hi[0], x), Math.max(hi[1], y)]);
-    const pad = grain * 2;
+    // About a sixth of the letters' height: the width of a letter's stroke.
+    const g = grain ?? Math.min(1.5, Math.max(0.5, (hi[1] - lo[1]) / 6));
+    const pad = g * 2;
     const reach = Math.max(hi[0] - lo[0], hi[1] - lo[1]) * 0.6 + 3; // how far round the frame's middle the body counts
     const local = (p) => {
       const r = sub(p, fr.o);
@@ -244,7 +251,7 @@ export function applyText(mesh, { texts = [], grain = 0.3, edge = 0.05 }) {
       const qa = local(a), qb = local(b);
       if (!over(qa, qb)) return false;
       const len = Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-      if (len > grain) return true;
+      if (len > g) return true;
       return len > edge && crossesOutline(polys, qa, qb);
     });
     const P = Float32Array.from(m.positions);
