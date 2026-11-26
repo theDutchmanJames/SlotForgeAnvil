@@ -1768,7 +1768,7 @@ function clearFix(p) {
   if (p.kind === 'tyre') return `<button class="btn sm" data-act="clear-arch" data-v="${p.pair}">Cut the ${p.pair} arches round the tyres</button>`;
   if (p.kind === 'guide') return '<button class="btn sm" data-act="clear-guide">Cut room for the guide</button>';
   const hollow = hollowStep();
-  if (!hollow) return '<span class="muted" style="font-size:12px">Hollow the body first: then Anvil can thin the wall here.</span>';
+  if (!hollow) return '<span class="muted" style="font-size:12px">Thinning the wall here works through Shell › Hollow (it builds the wall afresh from the outside, also on a body that is hollow already): add that, then thin here.</span>';
   const min = PRINT_WALLS[printOf().process].min;
   if (hollow.params.wall - p.depth < min)
     return `<span class="muted" style="font-size:12px">Too deep to thin away: the wall would be ${fmtLen(Math.max(hollow.params.wall - p.depth, 0), u)}. Raise the body on the chassis, or move the chassis.</span>`;
