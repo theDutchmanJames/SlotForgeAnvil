@@ -647,9 +647,17 @@ function panelOrient() {
     ${s ? '' : '<div class="note warn">There is no Orient step. Choosing a direction adds one.</div>'}
     <div class="f">Front of the car points to${axisButtons('orient-front', p.front, p.up)}</div>
     <div class="f">Roof points to${axisButtons('orient-up', p.up, p.front)}</div>
-    <div class="row"><button class="btn sm" data-act="orient-turn">Turn around</button><button class="btn sm" data-act="orient-flip">Upside down</button></div>
-    <div class="f">Straighten<div class="muted" style="font-weight:400;font-size:12px">Turns the car about its roof axis when it sits at an angle in the file. Check it in the Top view.</div>
-      <div class="row"><button class="btn sm icon" data-act="orient-yaw" data-v="-0.5" title="Turn 0.5° one way">−</button>${numField('orient-yaw', p.turn ?? 0, '°')}<button class="btn sm icon" data-act="orient-yaw" data-v="0.5" title="Turn 0.5° the other way">+</button><button class="btn sm ghost" data-act="orient-straighten">Auto</button></div></div>
+    <div class="row"><button class="btn sm" data-act="orient-turn" title="Swap the front and the back">Turn around</button><button class="btn sm" data-act="orient-flip" title="Roll the car over onto its wheels">Upside down</button><button class="btn sm${p.mirror ? ' on' : ''}" data-act="orient-mirror" title="Swap left and right">Mirror</button></div>
+    ${p.mirror ? '<div class="note warn">Mirrored: the body is a mirror image of the file, so a left-hand drive car becomes right-hand drive. Use it only if the file itself came mirrored.</div>' : ''}
+    <div class="f">Straighten<div class="muted" style="font-weight:400;font-size:12px">For a car that sits at an angle in the file. Auto squares it up on all three; check it in the Top, Side and Front views.</div>
+      ${[
+        ['turn', 'Turn', 'Seen from above', 'Top'],
+        ['tilt', 'Tilt', 'Plus lifts the nose', 'Side'],
+        ['lean', 'Lean', 'Plus lifts the right side', 'Front'],
+      ]
+        .map(([k, label, hint, view]) => `<div class="row" title="${hint}; check it in the ${view} view"><span style="width:38px;font-size:12px">${label}</span><button class="btn sm icon" data-act="orient-angle" data-v="${k}:-0.5" title="${label} 0.5° one way">−</button>${numField(`orient-${k}`, p[k] ?? 0, '°')}<button class="btn sm icon" data-act="orient-angle" data-v="${k}:0.5" title="${label} 0.5° the other way">+</button></div>`)
+        .join('')}
+      <div class="row"><button class="btn sm" data-act="orient-straighten">Auto</button><button class="btn sm ghost" data-act="orient-level">Reset to 0</button></div></div>
     <div class="note">Length ${fmtLen(b[0], u)} · width ${fmtLen(b[1], u)} · height ${fmtLen(b[2], u)}</div>`;
 }
 
@@ -3129,7 +3137,7 @@ function stepDetail(step, info) {
   }
   const p = step.params,
     u = project.units;
-  if (step.type === 'orient') return `front ${p.front}, roof ${p.up}${p.turn ? `, turned ${p.turn}°` : ''}`;
+  if (step.type === 'orient') return `front ${p.front}, roof ${p.up}${p.turn ? `, turned ${p.turn}°` : ''}${p.tilt ? `, tilted ${p.tilt}°` : ''}${p.lean ? `, leaned ${p.lean}°` : ''}${p.mirror ? ', mirrored' : ''}`;
   if (step.type === 'scale') return `× ${round(p.factor, 4)}`;
   if (step.type === 'slice')
     return `${AXIS_NAMES[p.axis].toLowerCase()} at ${fmtLen(p.at, u)}${p.tilt ? `, tilted ${p.tilt}° along the ${LEAN_NAMES[p.lean]}` : ''} · keep ${p.keep === 'both' ? 'both' : KEEP_NAMES[p.axis][p.keep].toLowerCase()}${p.cap ? ' · closed' : ''}${info?.glue ? ` · ${info.glue} glue tab${info.glue === 1 ? '' : 's'}` : ''}`;
@@ -3627,29 +3635,39 @@ const actions = {
     ui.section.flip = !ui.section.flip;
     applySection();
   },
+  // Another axis for the front or roof: the fine angles belonged to the old one.
   'orient-front'(v) {
-    setOrient({ front: v });
+    setOrient({ front: v, turn: 0, tilt: 0, lean: 0 });
   },
   'orient-up'(v) {
-    setOrient({ up: v });
+    setOrient({ up: v, turn: 0, tilt: 0, lean: 0 });
   },
+  // Turned round or rolled over, a car that was square stays square.
   'orient-turn'() {
     const p = orientStep()?.params ?? { front: '+x', up: '+z' };
-    setOrient({ front: (p.front[0] === '+' ? '-' : '+') + p.front[1] });
+    setOrient({ front: (p.front[0] === '+' ? '-' : '+') + p.front[1], tilt: -(p.tilt ?? 0) || 0, lean: -(p.lean ?? 0) || 0 });
   },
   'orient-flip'() {
     const p = orientStep()?.params ?? { front: '+x', up: '+z' };
-    setOrient({ up: (p.up[0] === '+' ? '-' : '+') + p.up[1] });
+    setOrient({ up: (p.up[0] === '+' ? '-' : '+') + p.up[1], turn: -(p.turn ?? 0) || 0, tilt: -(p.tilt ?? 0) || 0 });
   },
-  'orient-yaw'(v) {
-    const p = orientStep()?.params ?? {};
-    setOrient({ turn: Math.round(((p.turn ?? 0) + Number(v)) * 10) / 10 });
+  'orient-mirror'() {
+    setOrient({ mirror: !orientStep()?.params.mirror });
+  },
+  'orient-angle'(v) {
+    const [k, d] = v.split(':'),
+      p = orientStep()?.params ?? {};
+    const next = Math.round(((p[k] ?? 0) + Number(d)) * 10) / 10;
+    if (Math.abs(next) <= 180) setOrient({ [k]: next });
+  },
+  'orient-level'() {
+    setOrient({ turn: 0, tilt: 0, lean: 0 });
   },
   async 'orient-straighten'() {
     try {
-      const { turn } = await call('straighten', { params: orientStep()?.params ?? { front: '+x', up: '+z' } });
-      setOrient({ turn });
-      toast(turn ? `Straightened: turned ${turn}°.` : 'The car already sits straight.');
+      const a = await call('straighten', { params: orientStep()?.params ?? { front: '+x', up: '+z' } });
+      setOrient(a);
+      toast(a.turn || a.tilt || a.lean ? `Squared up: turn ${a.turn}°, tilt ${a.tilt}°, lean ${a.lean}°.` : 'The car already sits square.');
     } catch (e) {
       toast(e.message, 'bad');
     }
@@ -4644,8 +4662,8 @@ document.addEventListener('change', (e) => {
   } else if (f === 'reduce-tol') {
     if (v > 0) ui.reduce.tolerance = fromUnits(v, u);
     return renderPanel();
-  } else if (f === 'orient-yaw') {
-    if (Number.isFinite(v) && Math.abs(v) <= 180) setOrient({ turn: v });
+  } else if (f === 'orient-turn' || f === 'orient-tilt' || f === 'orient-lean') {
+    if (Number.isFinite(v) && Math.abs(v) <= 180) setOrient({ [f.slice(7)]: v });
     return;
   } else if (f === 'slice-cap') {
     ui.slice.cap = e.target.checked;

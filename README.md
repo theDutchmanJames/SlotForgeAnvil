@@ -54,7 +54,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 
 ### Open, check and repair
 
-- **Open any STL:** drop it on the window or use Open. Anvil finds which way is front and up, and straightens a car that sits at an angle in the file. Files of up to 3 million triangles open; over a million, Check suggests Reduce first so every step stays quick.
+- **Open any STL:** drop it on the window or use Open. Anvil finds which way is front and up, and squares up a car that lies at an angle in the file, even tilted or leaning. Under Scale › Orient you can turn it around, roll it over, mirror it, and set its turn, tilt and lean by hand. Files of up to 3 million triangles open; over a million, Check suggests Reduce first so every step stays quick.
 - **A check on every import:** what kind of model it is (solid, hollow shell, single skin or many parts), how thick its walls are, and what is wrong with it.
 - **Light fix:** removes specks and broken triangles, untangles touching surfaces, turns inside-out areas round and closes small holes, without moving the surface you see.
 - **Rebuild:** for a badly broken model. Anvil makes it again as one clean, closed piece on a fine grid: holes, doubled and tangled triangles go, and overlapping parts merge into one. A hollow shell stays a shell. Choose Coarse, Normal or Fine detail.

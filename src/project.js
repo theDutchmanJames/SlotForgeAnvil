@@ -6,8 +6,11 @@ export const FORMAT = 'slotforge-anvil-project';
 // older Anvil refuses such a file instead of skipping the step and exporting
 // the wrong shape. Projects without it are still written as version 1, so
 // older Anvils keep opening them.
-export const VERSION = 2;
-export const fileVersion = (p) => (p.steps.some((s) => s.type === 'bodyshape') ? 2 : 1);
+// Version 3 adds tilt, lean and mirror to Orient, which an older Anvil would
+// skip without a word.
+export const VERSION = 3;
+export const fileVersion = (p) =>
+  p.steps.some((s) => s.type === 'orient' && (s.params.tilt || s.params.lean || s.params.mirror)) ? 3 : p.steps.some((s) => s.type === 'bodyshape') ? 2 : 1;
 
 let counter = 0;
 export const newId = () => `s${Date.now().toString(36)}${(counter++).toString(36)}`;
@@ -25,7 +28,7 @@ export function newProject(fileName, bytes, guess) {
     buck: null, // buck settings (the buck itself is made on request, never stored)
     lenses: null, // light lens settings (the same)
     source: { fileName, bytes },
-    steps: [{ id: newId(), type: 'orient', enabled: true, params: { front: guess.front, up: guess.up, turn: guess.turn ?? 0 } }],
+    steps: [{ id: newId(), type: 'orient', enabled: true, params: { front: guess.front, up: guess.up, turn: guess.turn ?? 0, tilt: guess.tilt ?? 0, lean: guess.lean ?? 0 } }],
   };
 }
 

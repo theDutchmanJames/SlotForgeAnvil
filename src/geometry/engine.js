@@ -92,21 +92,43 @@ export function orientMatrix(front, up) {
   return [r1, r2, r3];
 }
 
-// turn: degrees to rotate about the up axis afterwards, to straighten a car
-// that sits at an angle in the file.
-export function applyOrient(mesh, { front, up, turn = 0 }) {
-  const [r1, r2, r3] = orientMatrix(front, up);
-  if (!Number.isFinite(turn) || Math.abs(turn) > 180) throw Error('Enter a turn between -180 and 180 degrees.');
-  const c = Math.cos((turn * Math.PI) / 180),
-    s = Math.sin((turn * Math.PI) / 180);
+// Fine angles in degrees, after the front and roof are chosen: turn about
+// the roof axis (seen from above), tilt about the width (plus lifts the nose)
+// and lean about the length (plus lifts the right side, +Y). The rotation is
+// turn · tilt · lean. mirror swaps left and right.
+const rad = (d) => (d * Math.PI) / 180;
+export function angleMatrix(turn = 0, tilt = 0, lean = 0) {
+  const ca = Math.cos(rad(turn)), sa = Math.sin(rad(turn));
+  const cb = Math.cos(rad(tilt)), sb = Math.sin(rad(tilt));
+  const cc = Math.cos(rad(lean)), sc = Math.sin(rad(lean));
+  return [
+    [ca * cb, ca * sb * sc - sa * cc, ca * sb * cc + sa * sc],
+    [sa * cb, sa * sb * sc + ca * cc, sa * sb * cc - ca * sc],
+    [-sb, cb * sc, cb * cc],
+  ];
+}
+// The turn, tilt and lean of a rotation, to 0.1°.
+export function matrixAngles(R) {
+  const r = (v) => Math.round((v * 1800) / Math.PI) / 10 || 0;
+  return {
+    turn: r(Math.atan2(R[1][0], R[0][0])),
+    tilt: r(Math.asin(Math.max(-1, Math.min(1, -R[2][0])))),
+    lean: r(Math.atan2(R[2][1], R[2][2])),
+  };
+}
+const mul = (A, B) => A.map((row) => [0, 1, 2].map((j) => row[0] * B[0][j] + row[1] * B[1][j] + row[2] * B[2][j]));
+
+export function applyOrient(mesh, { front, up, turn = 0, tilt = 0, lean = 0, mirror = false }) {
+  for (const [name, v] of [['turn', turn], ['tilt', tilt], ['lean', lean]])
+    if (!Number.isFinite(v) || Math.abs(v) > 180) throw Error(`Enter a ${name} between -180 and 180 degrees.`);
+  const [r1, r2, r3] = mul(angleMatrix(turn, tilt, lean), orientMatrix(front, up));
+  const flip = mirror ? -1 : 1;
   const p = mesh.positions,
     out = new Float32Array(p.length);
   for (let i = 0; i < p.length; i += 3) {
     const x = p[i], y = p[i + 1], z = p[i + 2];
-    const a = r1[0] * x + r1[1] * y + r1[2] * z,
-      b = r2[0] * x + r2[1] * y + r2[2] * z;
-    out[i] = c * a - s * b;
-    out[i + 1] = s * a + c * b;
+    out[i] = r1[0] * x + r1[1] * y + r1[2] * z;
+    out[i + 1] = flip * (r2[0] * x + r2[1] * y + r2[2] * z);
     out[i + 2] = r3[0] * x + r3[1] * y + r3[2] * z;
   }
   // Stand the car on Z = 0, centred on X and Y.
@@ -114,90 +136,150 @@ export function applyOrient(mesh, { front, up, turn = 0 }) {
   const shift = [-(min[0] + max[0]) / 2, -(min[1] + max[1]) / 2, -min[2]];
   for (let i = 0; i < out.length; i += 3)
     for (let k = 0; k < 3; k++) out[i + k] += shift[k];
-  return { positions: out, indices: mesh.indices };
+  if (!mirror) return { positions: out, indices: mesh.indices };
+  // A mirror image turns the triangles inside out: wind them the other way.
+  const idx = Uint32Array.from(mesh.indices);
+  for (let f = 0; f < idx.length; f += 3) [idx[f + 1], idx[f + 2]] = [idx[f + 2], idx[f + 1]];
+  return { positions: out, indices: idx };
 }
 
-// Degrees to turn about Z so the plan-view footprint is smallest. Returns 0
-// unless turning saves more than 0.5% of the area.
-export function straightenAngle(positions) {
-  const n = positions.length / 3,
-    step = Math.max(1, Math.floor(n / 20000));
-  const xs = [],
-    ys = [];
-  for (let i = 0; i < n; i += step) {
-    xs.push(positions[i * 3]);
-    ys.push(positions[i * 3 + 1]);
+// The turn, tilt and lean that square up a car already pointing roughly the
+// right way (within 45°). A car is mirror-symmetric, so the normal of its
+// centre plane is a principal axis of its surface: that sets the turn and
+// lean. The tilt is the one with the smallest outline seen from the side.
+// Angles under 1° are mostly an uneven mesh, not a crooked car: they come back as 0.
+export function squareAngles({ positions: p, indices: I }) {
+  const zero = { turn: 0, tilt: 0, lean: 0 };
+  const n = I.length / 3,
+    step = Math.max(1, Math.floor(n / 80000));
+  // The spread of the surface itself, triangle by triangle: area times the
+  // exact second moment of each triangle, about a point near the middle.
+  const o = bounds(p).min.map((v, k) => v + bounds(p).size[k] / 2);
+  const S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], c = [0, 0, 0];
+  let W = 0;
+  for (let f = 0; f < n; f += step) {
+    const v = [I[f * 3], I[f * 3 + 1], I[f * 3 + 2]].map((i) => [p[i * 3] - o[0], p[i * 3 + 1] - o[1], p[i * 3 + 2] - o[2]]);
+    const u = [0, 1, 2].map((k) => v[1][k] - v[0][k]),
+      t = [0, 1, 2].map((k) => v[2][k] - v[0][k]);
+    const w = Math.hypot(u[1] * t[2] - u[2] * t[1], u[2] * t[0] - u[0] * t[2], u[0] * t[1] - u[1] * t[0]) / 2;
+    if (!(w > 0)) continue;
+    const sum = [0, 1, 2].map((k) => v[0][k] + v[1][k] + v[2][k]);
+    W += w;
+    for (let r = 0; r < 3; r++) {
+      c[r] += (w * sum[r]) / 3;
+      for (let q = 0; q < 3; q++) S[r][q] += (w / 12) * (v[0][r] * v[0][q] + v[1][r] * v[1][q] + v[2][r] * v[2][q] + sum[r] * sum[q]);
+    }
   }
-  const area = (deg) => {
-    const c = Math.cos((deg * Math.PI) / 180),
-      s = Math.sin((deg * Math.PI) / 180);
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  if (!(W > 0)) return zero;
+  for (let k = 0; k < 3; k++) c[k] /= W;
+  const A = S.map((row, r) => row.map((v, q) => v / W - c[r] * c[q]));
+  // Jacobi: the columns of V become the principal axes.
+  const V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let sweep = 0; sweep < 30; sweep++)
+    for (const [i, j] of [[0, 1], [0, 2], [1, 2]]) {
+      if (Math.abs(A[i][j]) < 1e-12) continue;
+      const th = 0.5 * Math.atan2(2 * A[i][j], A[j][j] - A[i][i]),
+        cs = Math.cos(th), sn = Math.sin(th);
+      for (let k = 0; k < 3; k++) [A[k][i], A[k][j]] = [cs * A[k][i] - sn * A[k][j], sn * A[k][i] + cs * A[k][j]];
+      for (let k = 0; k < 3; k++) [A[i][k], A[j][k]] = [cs * A[i][k] - sn * A[j][k], sn * A[i][k] + cs * A[j][k]];
+      for (let k = 0; k < 3; k++) [V[k][i], V[k][j]] = [cs * V[k][i] - sn * V[k][j], sn * V[k][i] + cs * V[k][j]];
+    }
+  const axes = [0, 1, 2].map((e) => [V[0][e], V[1][e], V[2][e]]);
+  let w = axes.reduce((best, a) => (Math.abs(a[1]) > Math.abs(best[1]) ? a : best));
+  if (Math.abs(w[1]) < Math.SQRT1_2) return zero;
+  if (w[1] < 0) w = w.map((v) => -v);
+  // The smallest rotation that takes w to +Y (Rodrigues).
+  const k = [-w[2], 0, w[0]], s = Math.hypot(k[0], k[2]), cosA = w[1];
+  let R1 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  if (s > 1e-9) {
+    const [kx, , kz] = k.map((v) => v / s), t = 1 - cosA;
+    R1 = [
+      [cosA + kx * kx * t, -kz * s, kx * kz * t],
+      [kz * s, cosA, -kx * s],
+      [kx * kz * t, kx * s, cosA + kz * kz * t],
+    ];
+  }
+  // Side outline over the tilt, on the vertices.
+  const vstep = Math.max(1, Math.floor(p.length / 3 / 100000)), xs = [], zs = [];
+  for (let i = 0; i < p.length / 3; i += vstep) {
+    const x = p[i * 3], y = p[i * 3 + 1], z = p[i * 3 + 2];
+    xs.push(R1[0][0] * x + R1[0][1] * y + R1[0][2] * z);
+    zs.push(R1[2][0] * x + R1[2][1] * y + R1[2][2] * z);
+  }
+  const side = (deg) => {
+    const cb = Math.cos(rad(deg)), sb = Math.sin(rad(deg));
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
     for (let i = 0; i < xs.length; i++) {
-      const x = c * xs[i] - s * ys[i],
-        y = s * xs[i] + c * ys[i];
+      const x = cb * xs[i] + sb * zs[i], z = -sb * xs[i] + cb * zs[i];
       if (x < x0) x0 = x;
       if (x > x1) x1 = x;
-      if (y < y0) y0 = y;
-      if (y > y1) y1 = y;
+      if (z < z0) z0 = z;
+      if (z > z1) z1 = z;
     }
-    // Keep the length along X: a turn that swaps length and width is not wanted.
-    return x1 - x0 >= y1 - y0 ? (x1 - x0) * (y1 - y0) : Infinity;
+    return (x1 - x0) * (z1 - z0);
   };
-  let best = 0,
-    bestArea = area(0);
-  const straight = bestArea;
-  for (let d = -45; d <= 45; d += 1) {
-    const a = area(d);
+  let best = 0, bestArea = side(0);
+  for (let d = -30; d <= 30; d += 1) {
+    const a = side(d);
     if (a < bestArea) [best, bestArea] = [d, a];
   }
   for (let d = best - 1; d <= best + 1; d += 0.1) {
-    const a = area(d);
+    const a = side(d);
     if (a < bestArea) [best, bestArea] = [d, a];
   }
-  return bestArea < straight * 0.995 ? Math.round(best * 10) / 10 : 0;
+  const angles = matrixAngles(mul(angleMatrix(0, best, 0), R1));
+  for (const key in angles) if (Math.abs(angles[key]) < 1) angles[key] = 0;
+  return angles;
 }
 
 // Guess which way the file is turned: the longest side is the length, the
 // shortest the height, and the roof is narrower than the sills. A car sitting
-// at an angle is straightened along its main axis seen from above, and the
+// at an angle, even tilted or leaning, is squared up first (squareAngles), and the
 // front is the lower end (bonnet and nose sit lower than the tail).
 export function guessOrient(mesh) {
-  const { min, size } = bounds(mesh.positions);
+  const { size } = bounds(mesh.positions);
   const order = [0, 1, 2].sort((a, b) => size[b] - size[a]);
-  const [lengthAxis, widthAxis, upAxis] = order;
-  const p = mesh.positions;
-  const band = size[upAxis] * 0.2;
+  const [lengthAxis, , upAxis] = order;
+  const name = (axis, positive) => (positive ? '+' : '-') + 'xyz'[axis];
+  const guess = { front: name(lengthAxis, true), up: name(upAxis, true), turn: 0, tilt: 0, lean: 0 };
+  // Squared up first, so a car lying at an angle in the file is judged on
+  // its real sills and roof.
+  const square = () => {
+    Object.assign(guess, { turn: 0, tilt: 0, lean: 0 });
+    Object.assign(guess, squareAngles(applyOrient(mesh, guess)));
+    return applyOrient(mesh, guess).positions;
+  };
+  let car = square();
+
+  // Roof: narrower than the sills.
+  let b = bounds(car);
+  const band = b.size[2] * 0.2;
   let lo = [Infinity, -Infinity],
     hi = [Infinity, -Infinity];
-  for (let i = 0; i < p.length; i += 3) {
-    const h = p[i + upAxis] - min[upAxis],
-      w = p[i + widthAxis];
+  for (let i = 0; i < car.length; i += 3) {
+    const h = car[i + 2] - b.min[2],
+      w = car[i + 1];
     if (h < band) lo = [Math.min(lo[0], w), Math.max(lo[1], w)];
-    if (h > size[upAxis] - band) hi = [Math.min(hi[0], w), Math.max(hi[1], w)];
+    if (h > b.size[2] - band) hi = [Math.min(hi[0], w), Math.max(hi[1], w)];
   }
-  const roofUp = hi[1] - hi[0] <= lo[1] - lo[0];
-  const name = (axis, positive) => (positive ? '+' : '-') + 'xyz'[axis];
-  let guess = { front: name(lengthAxis, true), up: name(upAxis, roofUp), turn: 0 };
-
-  // Straighten: the turn that gives the smallest footprint seen from above.
-  // A straight car already has it; vertex density does not affect it.
-  let car = applyOrient(mesh, guess).positions;
-  const turn = straightenAngle(car);
-  if (turn) {
-    guess.turn = turn;
-    car = applyOrient(mesh, guess).positions;
+  if (hi[1] - hi[0] > lo[1] - lo[0]) {
+    guess.up = name(upAxis, false);
+    car = square();
+    b = bounds(car);
   }
 
-  // Front: the end whose top is lower.
-  const b = bounds(car);
+  // Front: the end whose top is lower (bonnet and nose sit lower than the
+  // tail). Canonical front is low X.
   const end = b.size[0] * 0.12;
   let lowEnd = 0, highEnd = 0;
   for (let i = 0; i < car.length; i += 3) {
     if (car[i] < b.min[0] + end) lowEnd = Math.max(lowEnd, car[i + 2]);
     if (car[i] > b.max[0] - end) highEnd = Math.max(highEnd, car[i + 2]);
   }
-  // Canonical front is low X. If the high-X end is lower, the car faces the other way.
-  if (highEnd < lowEnd) guess.front = name(lengthAxis, false);
+  if (highEnd < lowEnd) {
+    guess.front = name(lengthAxis, false);
+    square();
+  }
   return guess;
 }
 

@@ -1,6 +1,6 @@
 // Geometry runs here so the window stays responsive on dense car models.
 import { readSTLMesh } from './stl-mesh.js';
-import { applyOrient, guessOrient, meshStats, replay, straightenAngle } from './engine.js';
+import { applyOrient, guessOrient, meshStats, replay, squareAngles } from './engine.js';
 import { checkModel, listOpenings } from './repair.js';
 import { classifySkins, volume, wallThickness } from './shell.js';
 import { rayCaster } from './rays.js';
@@ -55,11 +55,10 @@ const methods = {
     ctx.parts.clear();
     return { guess: guessOrient(source), triangles: source.indices.length / 3 };
   },
-  // The turn that straightens the car, from the file as imported.
+  // The turn, tilt and lean that square the car up, from the file as imported.
   straighten({ params }) {
     if (!source) throw Error('No model is loaded.');
-    const base = applyOrient(source, { ...params, turn: 0 });
-    return { turn: straightenAngle(base.positions) };
+    return squareAngles(applyOrient(source, { front: params.front, up: params.up }));
   },
   build({ steps }) {
     if (!source) throw Error('No model is loaded.');
