@@ -114,8 +114,9 @@ export function traceWindows(mesh, opts = {}) {
     for (let f = 0; f < F; f++) if (outer[f]) sub3.push(T[f * 3], T[f * 3 + 1], T[f * 3 + 2]);
     const idx = Uint32Array.from(sub3);
     const tw = pairEdges(idx, V, P).twins;
-    for (const loop of boundaryLoops(idx, tw)) {
-      const pts = loop.map(pt);
+    // A scan's rims can run into each other through a panel gap (the
+    // windscreen into the bonnet's): split where a loop pinches.
+    for (const pts of boundaryLoops(idx, tw).flatMap((l) => splitPinches(l.map(pt)))) {
       if (!accept(pts)) continue;
       // The glass faces the way the outside round the rim does.
       const n = normalNear(pts, outer, nOf, cOf, A, F);
@@ -352,6 +353,48 @@ function stepOf(cast, loop, normal) {
   return Math.max(0, steps[Math.floor(steps.length / 2)]);
 }
 
+// Where a closed edge comes back to within `gap` of itself from far along
+// it, it is two loops joined by a narrow neck: split it there, and again in
+// each half. Far: more than `far` along the edge either way.
+export function splitPinches(pts, gap = 1.2, far = 12) {
+  if (pts.length < 16) return [pts];
+  // Distance along the edge at each point.
+  const at = [0];
+  for (let i = 1; i < pts.length; i++) at.push(at[i - 1] + Math.hypot(...sub(pts[i], pts[i - 1])));
+  const L = at.at(-1) + Math.hypot(...sub(pts[0], pts.at(-1)));
+  if (L < far * 2.5) return [pts];
+  // Look only every so often, then on a grid of cells, for speed.
+  const step = Math.max(1, Math.floor(pts.length / 4000));
+  const cells = new Map();
+  const key = (p) => p.map((x) => Math.floor(x / gap)).join(',');
+  for (let i = 0; i < pts.length; i += step) {
+    const k = key(pts[i]);
+    if (!cells.has(k)) cells.set(k, []);
+    cells.get(k).push(i);
+  }
+  let best = null;
+  for (let i = 0; i < pts.length; i += step) {
+    const p = pts[i];
+    const c = p.map((x) => Math.floor(x / gap));
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dz = -1; dz <= 1; dz++)
+          for (const j of cells.get([c[0] + dx, c[1] + dy, c[2] + dz].join(',')) ?? []) {
+            if (j <= i) continue;
+            const along = at[j] - at[i];
+            if (along < far || L - along < far) continue;
+            const d = Math.hypot(...sub(p, pts[j]));
+            if (d > gap) continue;
+            // The most even split first.
+            const score = Math.min(along, L - along);
+            if (!best || score > best.score) best = { i, j, score };
+          }
+  }
+  if (!best) return [pts];
+  const a = pts.slice(best.i, best.j + 1), b = [...pts.slice(best.j), ...pts.slice(0, best.i + 1)];
+  return [...splitPinches(a, gap, far), ...splitPinches(b, gap, far)];
+}
+
 function perimeter(pts) {
   let l = 0;
   for (let i = 0; i < pts.length; i++) l += Math.hypot(...sub(pts[(i + 1) % pts.length], pts[i]));
@@ -400,7 +443,9 @@ export function simplify(loop, normal, tol = 0.15) {
   const u = norm(cross(Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0], n)), v = cross(n, u);
   // Evenly spaced, about every half millimetre, without spurs (where the
   // edge runs out and straight back, a stray face at the rim).
-  const dense = despur(resample(loop, 0.5));
+  // Smoothed a little (over about a millimetre, back and forth so it does
+  // not shrink), so a scan's grain makes no corners or extra points.
+  const dense = smoothLoop(despur(resample(loop, 0.5)), 4);
   const m = dense.length;
   if (m < 12) return null;
   const flat = dense.map((p) => [dot(p, u), dot(p, v)]);
@@ -515,6 +560,19 @@ export function simplify(loop, normal, tol = 0.15) {
       if (!doubt.some((q) => Math.hypot(...sub(p, q)) < 3)) doubt.push(p.map((x) => Math.round(x * 1000) / 1000));
     }
   return { points, corners, doubt };
+}
+
+function smoothLoop(pts, rounds) {
+  let p = pts;
+  const m = p.length;
+  for (let r = 0; r < rounds; r++)
+    for (const w of [0.5, -0.53]) {
+      p = p.map((q, i) => {
+        const a = p[(i - 1 + m) % m], b = p[(i + 1) % m];
+        return q.map((x, k) => x + w * ((a[k] + b[k]) / 2 - x));
+      });
+    }
+  return p;
 }
 
 // Out and straight back again: a spur. Its points go, its ends stay.

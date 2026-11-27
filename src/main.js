@@ -2715,10 +2715,14 @@ function traceTool() {
     <div class="row">${t.found.length ? `<button class="btn primary sm" data-act="win-trace-add"${t.chosen.size ? '' : ' disabled'}>Add ${t.chosen.size} window${t.chosen.size === 1 ? '' : 's'}</button>` : ''}<button class="btn sm ghost" data-act="win-trace-cancel">Cancel</button></div>`;
 }
 function traceName(w, i) {
-  // As Anvil names drawn windows, numbered when there are more of a kind.
-  const light = !w.likely && Math.abs(w.normal[0]) > 0.6;
-  const base = light ? (w.normal[0] < 0 ? 'Headlight' : 'Taillight') : windowName(w.normal);
-  const same = ui.trace.found.filter((x, j) => j < i && (!x.likely && Math.abs(x.normal[0]) > 0.6 ? (x.normal[0] < 0 ? 'Headlight' : 'Taillight') : windowName(x.normal)) === base).length;
+  // By where it sits: a pair, or one facing the side, is a side window; the
+  // rest a windscreen in the front half, a rear window behind. Low ones
+  // facing an end are lights. Numbered when there are more of a kind.
+  const mid = result.stats.bounds.min[0] + result.stats.bounds.size[0] / 2;
+  const kindOf = (x) =>
+    !x.likely && Math.abs(x.normal[0]) > 0.6 ? (x.normal[0] < 0 ? 'Headlight' : 'Taillight') : x.mirror || Math.abs(x.normal[1]) > 0.55 ? 'Side window' : x.centre[0] < mid ? 'Windscreen' : 'Rear window';
+  const base = kindOf(w);
+  const same = ui.trace.found.filter((x, j) => j < i && kindOf(x) === base).length;
   return same ? `${base} ${same + 1}` : base;
 }
 

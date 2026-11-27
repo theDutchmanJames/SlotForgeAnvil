@@ -77,3 +77,20 @@ test('test car Datsun: its windscreen, both pairs of side windows and its rear w
   assert.equal(likely.filter((w) => w.mirror).length, 2);
   for (const w of likely) assert.ok(w.points.length <= 40, `${w.points.length} points`);
 });
+
+test('two openings joined through a narrow gap (a scan\'s panel gap) are split apart', async () => {
+  const { splitPinches } = await import('../src/geometry/trace.js');
+  // Two 20 × 10 rectangles side by side, run as one loop through a 0.5 mm neck.
+  const loop = [];
+  const line = (a, b) => {
+    const n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.5);
+    for (let i = 0; i < n; i++) loop.push([a[0] + ((b[0] - a[0]) * i) / n, a[1] + ((b[1] - a[1]) * i) / n, 0]);
+  };
+  line([0, 0], [20, 0]); line([20, 0], [20, 4.75]); line([20, 4.75], [30, 4.75]); line([30, 4.75], [30, 0]);
+  line([30, 0], [50, 0]); line([50, 0], [50, 10]); line([50, 10], [30, 10]); line([30, 10], [30, 5.25]);
+  line([30, 5.25], [20, 5.25]); line([20, 5.25], [20, 10]); line([20, 10], [0, 10]); line([0, 10], [0, 0]);
+  const parts = splitPinches(loop);
+  assert.ok(parts.length >= 2, `${parts.length} loops`);
+  const big = parts.filter((p) => p.length > 80);
+  assert.equal(big.length, 2);
+});
