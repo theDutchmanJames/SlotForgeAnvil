@@ -18,6 +18,22 @@ export function rayCaster(positions, indices) {
   };
 }
 
+// As rayCaster, with the facing of the surface hit: { t, n } (n as the
+// triangle is wound), or null.
+export function rayCasterFacing(positions, indices) {
+  const geo = new BufferGeometry();
+  geo.setAttribute('position', new BufferAttribute(positions, 3));
+  geo.setIndex(new BufferAttribute(Uint32Array.from(indices), 1));
+  const bvh = new MeshBVH(geo);
+  const ray = new Ray();
+  const o = new Vector3(), d = new Vector3();
+  return (origin, dir) => {
+    ray.set(o.set(origin[0], origin[1], origin[2]), d.set(dir[0], dir[1], dir[2]));
+    const hit = bvh.raycastFirst(ray, DoubleSide);
+    return hit ? { t: hit.distance, n: [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z] } : null;
+  };
+}
+
 // How many surfaces a ray passes through: odd means the start is inside a closed body.
 export function rayCounter(positions, indices) {
   const geo = new BufferGeometry();

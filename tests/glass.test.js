@@ -254,3 +254,45 @@ test('cutting a window keeps small parts the model has elsewhere', async () => {
   const out = applyWindows(car, { windows: [side()], depth: 3, fine: true, ...glass });
   assert.equal(meshStats(out).parts, meshStats(car).parts, 'the antenna is still there');
 });
+
+test('wall thickness at a window\'s rim reads the wall, not a corner cut short', async () => {
+  const { wallThickness } = await import('../src/geometry/shell.js');
+  const out = applyWindows(body, { windows: [side()], depth: 3, fine: true });
+  const t = wallThickness(out);
+  const P = out.positions;
+  const rim = [];
+  for (let v = 0; v < P.length / 3; v++) {
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    // On the outside of the -Y side, right at the opening's edge.
+    if (Math.abs(y + 20) < 0.01 && ((Math.abs(z - 10) < 0.05 && x > 32 && x < 58) || (Math.abs(x - 30) < 0.05 && z > 12 && z < 20))) rim.push(t[v]);
+  }
+  assert.ok(rim.length > 5);
+  rim.sort((a, b) => a - b);
+  assert.ok(rim[0] > 0.9, `thinnest at the rim ${rim[0]}`);
+});
+
+test('Check tells pieces laid out side by side from parts that overlap', async () => {
+  const { checkModel } = await import('../src/geometry/repair.js');
+  const { joinMeshes } = await import('../src/geometry/topology.js');
+  const { box } = await import('./shapes.js');
+  const at = (m, x) => ({ positions: Float32Array.from(m.positions, (v, i) => (i % 3 === 0 ? v + x : v)), indices: m.indices });
+  const b = box(10, 10, 2, 4);
+  assert.equal(checkModel(joinMeshes([b, at(b, 14), at(b, 28)])).overlap, false);
+  assert.equal(checkModel(joinMeshes([b, at(b, 5), at(b, 28)])).overlap, true);
+});
+
+test('a clear part\'s lip is narrower where it would run into the body behind the wall', async () => {
+  const { makeLenses } = await import('../src/geometry/lenses.js');
+  const { windowOutlines } = await import('../src/geometry/windows.js');
+  const { joinMeshes } = await import('../src/geometry/topology.js');
+  const { box } = await import('./shapes.js');
+  // A rib inside, against the wall just below the window, where the lip goes.
+  const rib = box(30, 2, 3, 4);
+  for (let v = 0; v < rib.positions.length; v += 3) (rib.positions[v] += 30), (rib.positions[v + 1] += -19 + 0.15), (rib.positions[v + 2] += 6.5);
+  const car = joinMeshes([body, rib]);
+  const ol = windowOutlines([side()], 0.25).map((o) => ({ name: o.window.name, points: o.points, normal: o.normal }));
+  const r = makeLenses(car, ol, { wall: 1, lipWidth: 0.8, lip: 0.6 });
+  assert.deepEqual(r.info.warnings, []);
+  assert.ok(r.info.notes.some((n) => /lip is narrower/.test(n)), JSON.stringify(r.info.notes));
+  assert.equal(meshStats(r.car.lenses).openEdges, 0);
+});

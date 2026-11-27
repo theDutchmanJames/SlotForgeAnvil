@@ -5,7 +5,7 @@
 import { bounds } from './bounds.js';
 import { cleanOut } from './cleanout.js';
 import { applySlice } from './engine.js';
-import { faceFrame, rayCaster, sampleFaces } from './rays.js';
+import { faceFrame, rayCaster, rayCasterFacing, sampleFaces } from './rays.js';
 import { next, pairEdges, partsOf, splitTouching } from './topology.js';
 
 // ------------------------------------------------------------ floor line
@@ -321,34 +321,89 @@ export function wallThickness(mesh) {
       for (let c = 0; c < 3; c++) normals[v + c] += normal[c] * area;
     }
   }
-  const cast = rayCaster(positions, indices);
+  const cast = rayCasterFacing(positions, indices);
   const eps = Math.hypot(...bounds(positions).size) * 1e-5;
   const out = new Float32Array(V).fill(Infinity);
+  // The faces round each corner, for the corners on a sharp edge.
+  const F = indices.length / 3;
+  const fn = new Float32Array(F * 3);
+  const start = new Int32Array(V + 1);
+  for (let f = 0; f < F; f++) {
+    const { normal } = faceFrame(positions, indices, f);
+    if (normal) fn.set(normal, f * 3);
+    for (let k = 0; k < 3; k++) start[indices[f * 3 + k] + 1]++;
+  }
+  for (let v = 0; v < V; v++) start[v + 1] += start[v];
+  const ring = new Int32Array(F * 3), at = start.slice(0, V);
+  for (let f = 0; f < F; f++) for (let k = 0; k < 3; k++) ring[at[indices[f * 3 + k]]++] = f;
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  // Straight in along d from p, to the far side of the wall: the first
+  // surface facing the way the ray goes (where it leaves the material). A
+  // surface facing back at it is the same side again (a fold of a grainy
+  // inner wall, the next bump of a scan's outside) and is looked through.
+  const through = (p, d) => {
+    let q = p.map((x, c) => x + d[c] * eps),
+      total = eps;
+    for (let i = 0; i < 8; i++) {
+      const hit = cast(q, d);
+      if (!hit) return i ? total : Infinity;
+      total += hit.t + eps;
+      q = q.map((x, c) => x + d[c] * (hit.t + eps));
+      if (dot(hit.n, d) <= 0) continue;
+      // Where inner walls meet in the middle of a solid part, look through
+      // the meeting point: the material carries on behind it. And leaving
+      // twice in a row means the first was a fold of a wall crossing itself
+      // (a grainy inner wall): the far side is the second.
+      const behind = cast(q, d);
+      if (!behind) return total;
+      const leavesAgain = dot(behind.n, d) > 0;
+      if (behind.t > MEETING && !leavesAgain) return total;
+      if (leavesAgain && behind.t > 4) return total;
+      total += behind.t + eps;
+      q = q.map((x, c) => x + d[c] * (behind.t + eps));
+      if (leavesAgain) {
+        // That second leaving is the far side, unless more of the same follows.
+        const next = cast(q, d);
+        if (!next || dot(next.n, d) <= 0 || next.t > MEETING) return total;
+      }
+    }
+    return total;
+  };
   for (let v = 0; v < V; v++) {
     const n = [normals[v * 3], normals[v * 3 + 1], normals[v * 3 + 2]];
     const l = Math.hypot(...n);
     if (!l) continue;
     const d = n.map((x) => -x / l);
     const p = [positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]];
-    // Where inner walls meet in the middle of a solid part, look through
-    // the meeting point: the material carries on behind it.
-    let q = p.map((x, c) => x + d[c] * eps),
-      total = eps;
-    for (let i = 0; i < 4; i++) {
-      const hit = cast(q, d);
-      if (hit === Infinity) {
-        if (!i) total = Infinity;
-        break;
-      }
-      total += hit + eps;
-      q = q.map((x, c) => x + d[c] * (hit + eps));
-      // A real end of the wall, unless a second sheet lies right behind it.
-      const behind = cast(q, d);
-      if (behind > MEETING) break;
-      total += behind + eps;
-      q = q.map((x, c) => x + d[c] * (behind + eps));
+    // On a sharp edge (the rim round an opening: the outside turning into
+    // the band across the wall) the mean facing points across the corner and
+    // a ray along it cuts the corner short. There: straight in from each face
+    // round it, and the middle of those, so a rim reads its wall; a thin
+    // flange still reads thin across its faces.
+    let sharp = false;
+    for (let a = start[v]; a < start[v + 1] && !sharp; a++) {
+      const f = ring[a];
+      if (-(fn[f * 3] * d[0] + fn[f * 3 + 1] * d[1] + fn[f * 3 + 2] * d[2]) < 0.7) sharp = true;
     }
-    out[v] = total;
+    const each = [];
+    if (sharp) {
+      const seen = [];
+      for (let a = start[v]; a < start[v + 1]; a++) {
+        const f = ring[a];
+        const m = [-fn[f * 3], -fn[f * 3 + 1], -fn[f * 3 + 2]];
+        if (!(m[0] || m[1] || m[2]) || seen.some((s2) => dot(s2, m) > 0.98)) continue;
+        seen.push(m);
+        each.push(through(p, m));
+      }
+    }
+    // The larger of that and straight in along the corner's own facing: on
+    // a grainy wall the faces round a corner tilt a lot, and rays along
+    // them graze the surface and read short.
+    const straight = through(p, d);
+    if (each.length) {
+      each.sort((x, y) => x - y);
+      out[v] = Math.max(straight, each[Math.floor((each.length - 1) / 2)]);
+    } else out[v] = straight;
   }
   return out;
 }

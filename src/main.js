@@ -1021,7 +1021,7 @@ const KINDS = [
   ['solid', 'Solid', 'Filled all the way through'],
   ['shell', 'Hollow shell', 'Already hollow'],
   ['skin', 'Single skin', 'A surface with no thickness'],
-  ['many', 'Many parts', 'Pieces that overlap'],
+  ['many', 'Many parts', 'Several pieces'],
 ];
 const VERDICT = {
   solid: 'This is a solid model',
@@ -1054,6 +1054,8 @@ function panelCheck() {
   let expect;
   if (c.kind === 'skin')
     expect = '<div class="note warn"><b>This surface has no thickness.</b><br>It cannot be printed as it is. Thickening it inwards comes with the Shell tools.</div>';
+  else if (c.kind === 'many' && !c.overlap)
+    expect = '<div class="note"><b>Separate pieces, side by side.</b><br>Fine as a set to print, such as clear parts or bucks. To work on one of them as a body, keep it under <button class="btn sm ghost" data-act="tool" data-v="parts">Parts</button>.</div>';
   else if (c.kind === 'many')
     expect = '<div class="note warn"><b>The parts overlap.</b><br>Keep the body under Parts, or merge everything into one clean piece with <button class="btn sm ghost" data-act="final-go" data-v="rebuild">Rebuild</button>.</div>';
   else expect = '<div class="note ok"><b>The outer surface stays exactly as it is.</b><br>' + (fixable ? 'The light fix only removes and untangles faults.' : 'This model needs no repair.') + '</div>';
@@ -3079,6 +3081,7 @@ function panelLenses() {
         ? `${r.car.plugs.indices.length ? `<div class="f">Show on the car<span class="seg">${[['lens', 'Printed parts'], ['buck', 'Lens bucks']].map(([k, n]) => `<button data-act="lens-show" data-v="${k}" class="${lensJob.show === k ? 'on' : ''}">${n}</button>`).join('')}</span></div>` : ''}
           <div class="note">${r.info.lights.map((l) => `${esc(l.name)}: ${fmtLen(l.size[0], u, 1)} × ${fmtLen(l.size[1], u, 1)}, glass ${name(l.kind ?? 'inside')}`).join('<br>')}</div>
           ${r.info.warnings.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
+          ${(r.info.notes ?? []).map((w) => `<div class="note">${esc(w)}</div>`).join('')}
           <div class="row"><button class="btn sm" data-act="lens-export" data-v="lens">${icon('export')}Export clear parts</button>${r.print.plugs.indices.length ? `<button class="btn sm" data-act="lens-export" data-v="buck">${icon('export')}Export lens bucks</button>` : ''}</div>
           <div class="muted" style="font-size:12px">Print the parts outside up, in fine layers; polish or clear-coat them for the clearest glass. Clear filament comes out see-through but a little milky; sanding and a clear coat help.${r.print.plugs.indices.length ? ' Print the bucks solid in fine layers and smooth them: layer lines show through the formed sheet.' : ''}</div>`
         : ''

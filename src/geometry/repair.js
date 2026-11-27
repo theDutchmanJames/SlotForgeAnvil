@@ -140,10 +140,32 @@ export function checkModel(mesh) {
   else if (wall != null && wall < height * 0.2) kind = 'shell';
   else if (main.closed) kind = 'solid';
   else kind = 'skin';
+  // Do they overlap, or lie side by side (a set of parts laid out to print)?
+  let overlap = false;
+  if (big.length >= 2) {
+    const box = new Map(big.map((p) => [p.id, [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]]]));
+    for (let f = 0; f < part.length; f++) {
+      const b = box.get(part[f]);
+      if (!b) continue;
+      for (let k = 0; k < 3; k++) {
+        const v = indices[f * 3 + k] * 3;
+        for (let c = 0; c < 3; c++) {
+          if (positions[v + c] < b[0][c]) b[0][c] = positions[v + c];
+          if (positions[v + c] > b[1][c]) b[1][c] = positions[v + c];
+        }
+      }
+    }
+    const list = [...box.values()];
+    const gap = diag * 1e-4;
+    for (let a = 0; a < list.length && !overlap; a++)
+      for (let b = a + 1; b < list.length && !overlap; b++)
+        overlap = [0, 1, 2].every((c) => list[a][0][c] < list[b][1][c] - gap && list[b][0][c] < list[a][1][c] - gap);
+  }
 
   return {
     triangles: total,
     kind,
+    overlap,
     wall,
     collapsed,
     doubled,

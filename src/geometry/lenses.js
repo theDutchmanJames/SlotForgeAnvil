@@ -347,9 +347,26 @@ function printedLens(f, o, depth = 0) {
   };
   const hB = inner.map(([x, y], i) => Math.min(behind(x, y, hIn[i]), hIn[i] - 0.2));
   // Where the lip reaches off the body, it follows the lens edge instead.
-  const hC = lip.map(([x, y], i) => {
+  const lipTop = ([x, y], i) => {
     const h = outside(x, y);
     return Number.isFinite(h) ? Math.min(behind(x, y, h), hB[i]) : hB[i];
+  };
+  const hC = lip.map(lipTop);
+  // Where the lip would run into the body behind the wall (a fold, a rib, a
+  // lip the model has round its opening), it is narrower there, down to a
+  // tenth, so the part still goes in.
+  const hits = (p, h) => cast(toCar(p[0], p[1], h), c.d) < o.lip;
+  let narrowed = 0;
+  lip.forEach((p, i) => {
+    if (!hits(p, hC[i])) return;
+    narrowed++;
+    for (const share of [0.6, 0.35, 0.1]) {
+      const q = [inner[i][0] + (p[0] - inner[i][0]) * share, inner[i][1] + (p[1] - inner[i][1]) * share];
+      const h = lipTop(q, i);
+      lip[i] = q;
+      hC[i] = h;
+      if (!hits(q, h)) break;
+    }
   });
   const pos = [];
   const ring = (pts, hs, down = 0) =>
@@ -374,13 +391,13 @@ function printedLens(f, o, depth = 0) {
     return Number.isFinite(h) ? Math.min(behind(x, y, h), mean(hB)) - o.lip : NaN;
   };
   for (const t of liftedPatch(pos, D, lip, back, mean(hC) - o.lip)) idx.push(...t);
-  // Does the lip meet the body behind the wall (a fold, a rib)? Looked for
-  // straight back from round its top, through its thickness.
+  // Does the lip still meet the body behind the wall, narrowed as far as it
+  // goes? Looked for straight back from round its top, through its thickness.
   let blocked = 0;
-  lip.forEach(([x, y], i) => {
-    if (cast(toCar(x, y, hC[i]), c.d) < o.lip) blocked++;
+  lip.forEach((p, i) => {
+    if (hits(p, hC[i])) blocked++;
   });
-  return { mesh: outward(pos, idx), blocked: blocked / lip.length };
+  return { mesh: outward(pos, idx), blocked: blocked / lip.length, narrowed: narrowed / lip.length };
 }
 
 // The lens buck, in the light's frame (standing on its plinth).
@@ -592,7 +609,7 @@ export function makeLenses(mesh, outlines, opts) {
   if (!(o.wall > 0)) throw Error('Enter the wall thickness of the body.');
   if (!outlines.length) throw Error('Draw a window or a light first (Windows), and set it Open.');
   const cast = rayCaster(mesh.positions, mesh.indices);
-  const lenses = [], plugs = [], carLenses = [], carPlugs = [], lights = [], warnings = [];
+  const lenses = [], plugs = [], carLenses = [], carPlugs = [], lights = [], warnings = [], notes = [];
   for (const ol of outlines) {
     const g = { kind: 'inside', thick: 1, depth: 0, overlap: 0, minWall: 0.6, ...ol.glass };
     const f = lightFrame(ol, cast, o.margin + o.wall + o.sheet + o.allowance + 2 + g.depth + g.thick);
@@ -602,7 +619,8 @@ export function makeLenses(mesh, outlines, opts) {
       warnings.push(`${ol.name}: ${lens.error ?? plug.error}, so it has no clear part`);
       continue;
     }
-    if (lens.blocked > 0.05) warnings.push(`${ol.name}: the printed lens's lip runs into the body behind the wall round ${Math.round(lens.blocked * 100)}% of it; make the lip narrower or thinner`);
+    if (lens.blocked > 0.05) warnings.push(`${ol.name}: the printed lens's lip still runs into the body behind the wall round ${Math.round(lens.blocked * 100)}% of it, narrowed as far as it goes; make the lip thinner, or sand the part to fit`);
+    else if (lens.narrowed > 0.05) notes.push(`${ol.name}: the lip is narrower round ${Math.round(lens.narrowed * 100)}% of it, where it would run into the body`);
     if (plug?.missed > 0.02) warnings.push(`${ol.name}: ${Math.round(plug.missed * 100)}% of the lens buck's glue margin is off the body (the lamp sits in a deep bowl, or near an edge); the buck is filled there. A smaller glue margin may fit`);
     lenses.push(lens.mesh);
     carLenses.push(onCar(f, lens.mesh));
@@ -618,6 +636,6 @@ export function makeLenses(mesh, outlines, opts) {
   return {
     car: { lenses: join(carLenses), plugs: join(carPlugs) },
     print: { lenses: layOut(lenses, o.gap) ?? EMPTY(), plugs: layOut(plugs, o.gap) ?? EMPTY() },
-    info: { lights, warnings, offset: o.wall + o.sheet + o.allowance },
+    info: { lights, warnings, notes, offset: o.wall + o.sheet + o.allowance },
   };
 }
