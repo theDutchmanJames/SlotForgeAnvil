@@ -26,7 +26,10 @@ const AROUND = [[0, 0], ...Array.from({ length: 8 }, (_, k) => [Math.cos((k * Ma
 // 'raised' (each window's area stands proud by `raise`, with a sharp
 // edge, so the formed sheet has a step to trim along), 'groove' (a V-groove
 // `grooveWidth` wide and `grooveDepth` deep along each outline, for the knife).
-export const BUCK_DEFAULTS = { sheet: 0.5, allowance: 0.1, margin: 3, skirt: 3, plinth: 2, draft: 1, guide: 0.15, marks: 'line', raise: 0.5, grooveWidth: 0.6, grooveDepth: 0.3 };
+// span: openings the model has, closed in all round seen from above, get a
+// smooth skin across (window openings); off for an open car, whose open
+// cockpit must not get a roof.
+export const BUCK_DEFAULTS = { sheet: 0.5, allowance: 0.1, margin: 3, skirt: 3, plinth: 2, draft: 1, guide: 0.15, marks: 'line', raise: 0.5, grooveWidth: 0.6, grooveDepth: 0.3, span: true };
 
 // opts: { wall, sheet, allowance, trim: { front, rear }, skirt, plinth, draft,
 //         margin, guide, outlines: [{ name, points, normal }], posts: [{ x, y }], cell }
@@ -101,8 +104,8 @@ export function makeBuck(mesh, opts) {
     }
     const hole = [];
     for (let i = I0; i <= I1; i++) for (let j = J0; j <= J1; j++) if (H[i * ny + j] === -Infinity && !air[i * ny + j]) hole.push(i * ny + j);
-    filledHoles = hole.length;
-    if (hole.length) {
+    filledHoles = o.span === false ? 0 : hole.length;
+    if (filledHoles) {
       // Start from the mean of each hole spot's known neighbours, growing in
       // from the rim, then smooth it (a soap film across the opening).
       const known = new Uint8Array(nx * ny);

@@ -233,3 +233,24 @@ test('a window over an opening the model already has is left uncut, and its clea
   for (let v = 1; v < P.length; v += 3) minY = Math.min(minY, P[v]);
   assert.ok(Math.abs(minY + 20) < 0.05, `face at ${minY}`);
 });
+
+test('an open car: with Span the model\'s openings off, the buck does not roof over its cockpit', async () => {
+  const { makeBuck } = await import('../src/geometry/buck.js');
+  const opened = applyWindows(body, { windows: [roofWindow()], depth: 3, fine: true });
+  const spanned = heightOf(makeBuck(opened, buckOpts([])).mesh);
+  const open = makeBuck(opened, buckOpts([], { span: false }));
+  assert.equal(open.info.filledHoles, 0);
+  assert.ok(spanned(50, 0) > 28, 'spanned across');
+  assert.ok(heightOf(open.mesh)(50, 0) < 25, `left open: ${heightOf(open.mesh)(50, 0)}`);
+});
+
+test('cutting a window keeps small parts the model has elsewhere', async () => {
+  const { joinMeshes } = await import('../src/geometry/topology.js');
+  const { box } = await import('./shapes.js');
+  // A 2 mm "antenna" block of its own on the roof, a long way from the window.
+  const ant = box(2, 2, 2, 1);
+  for (let v = 0; v < ant.positions.length; v += 3) (ant.positions[v] += 10), (ant.positions[v + 2] += 31);
+  const car = joinMeshes([body, ant]);
+  const out = applyWindows(car, { windows: [side()], depth: 3, fine: true, ...glass });
+  assert.equal(meshStats(out).parts, meshStats(car).parts, 'the antenna is still there');
+});

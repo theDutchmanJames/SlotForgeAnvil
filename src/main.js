@@ -2555,7 +2555,8 @@ function setWindows(windows) {
       if (at < 0) project.steps.push(step);
       else project.steps.splice(at, 0, step);
     }
-    step.params = { ...step.params, windows, depth: step.params.depth ?? cutDepth(), fine: true, pane: step.params.pane ?? round(hollowWall() ?? 1, 3), recess: step.params.recess ?? 0.3 };
+    // A new step takes this print's glass settings, so the glass is cut as the panel shows it.
+    step.params = { ...glassSettings(step), ...step.params, windows, depth: step.params.depth ?? cutDepth(), fine: true, pane: step.params.pane ?? round(hollowWall() ?? 1, 3), recess: step.params.recess ?? 0.3 };
   });
 }
 
@@ -2917,7 +2918,7 @@ async function makeBuckNow() {
     const opts = { wall: s.wall, sheet: s.sheet, allowance: s.allowance, margin: s.margin, skirt: s.skirt, plinth: s.plinth, draft: s.draft, guide: s.guide };
     opts.trim = { front: s.trimFront, rear: s.trimRear };
     opts.cabin = { from: nose + s.cabinFrom, to: nose + s.cabinTo };
-    Object.assign(opts, { mode: s.mode, marks: s.marks, raise: s.raise, grooveWidth: s.grooveWidth, grooveDepth: s.grooveDepth, clearance: lensSettings().clearance });
+    Object.assign(opts, { span: s.span, mode: s.mode, marks: s.marks, raise: s.raise, grooveWidth: s.grooveWidth, grooveDepth: s.grooveDepth, clearance: lensSettings().clearance });
     const out = await call('buck', { opts });
     buck.result = out;
     buck.key = buckKey();
@@ -2980,6 +2981,8 @@ function panelBuck() {
     <div class="f">Make<span class="seg">${[['cabin', 'One insert', 'One plug for the whole cabin, glued in from inside'], ['each', 'A buck per window', 'Each window its own plug and pane']].map(([k, n, t]) => `<button data-act="buck-mode" data-v="${k}" class="${(s.mode ?? 'cabin') === k ? 'on' : ''}" title="${t}">${n}</button>`).join('')}</span>
       ${own.length ? `<span class="muted" style="font-weight:400;font-size:12px">Own bucks: ${own.map((w) => `${esc(w.name)}${w.mirror ? ' (both sides)' : ''} (glass ${gname(w)})`).join(', ')}.${each ? '' : ' Glass on the outside cannot go in the one insert.'}</span>` : ''}</div>
     ${cabinFields}
+    ${each ? '' : `<label class="chk"><input type="checkbox" data-act="buck-span" ${s.span !== false ? 'checked' : ''}>Span the model's openings</label>
+      <div class="muted" style="font-weight:400;font-size:12px;margin-top:-4px">Window openings the model came with get a smooth skin across on the buck. Turn it off for an open car, so its cockpit gets no roof.</div>`}
     ${each ? '' : `<div class="f">Trim line (green on the car)<div class="g2">${f('trimFront', 'Height at the front')}${f('trimRear', 'Height at the back')}</div>
       <span class="muted" style="font-weight:400;font-size:12px">The formed sheet is cut off here. It should run at least the glue margin below every window.</span></div>
     <div class="f">Cabin, measured from the nose<div class="g2">${f('cabinFrom', 'From', 1)}${f('cabinTo', 'To', 1)}</div>
@@ -3287,7 +3290,7 @@ function panelFinal() {
   if (win) {
     const pill = pillarWarnings(allWindows());
     const warns = [...(winInfo?.warnings ?? []), ...pill.map((p) => p.text)];
-    row(warns.length ? 'warn' : 'ok', 'Windows', warns.length ? warns.join('; ') : `${allWindows().length} window${allWindows().length === 1 ? '' : 's'}, ${winInfo?.cut ?? 0} cut cleanly.`, 'windows', 'Look');
+    row(warns.length ? 'warn' : 'ok', 'Windows', warns.length ? warns.join('; ') : `${allWindows().length} window${allWindows().length === 1 ? '' : 's'}, ${winInfo?.cut ?? 0} cut cleanly${winInfo?.alreadyOpen ? `, ${winInfo.alreadyOpen} open in the model already` : ''}.`, 'windows', 'Look');
     const bk = buck.result;
     if (!bk) row('warn', 'Glazing buck', 'Not made yet.', 'buck', 'Make it');
     else if (buck.key !== buckKey()) row('warn', 'Glazing buck', 'Made before the last change: make it again.', 'buck', 'Make it');
@@ -3319,7 +3322,7 @@ function panelFinal() {
         (r) => `<div class="prow fc-${r.state}"><span class="dot ${r.state === 'ok' ? 'ok' : r.state === 'bad' ? 'bad' : r.state === 'warn' ? 'w' : 'no'}"></span><span><b>${r.title}</b><small>${r.text}</small></span>${r.tool ? `<button class="btn sm ghost" data-act="final-go" data-v="${r.tool}">${r.label}</button>` : ''}</div>`,
       )
       .join('')}</div>
-    <div class="row"><button class="btn primary sm" data-act="export">${icon('export')}Export STL</button>${buck.result ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export buck</button>` : ''}<button class="btn sm ghost" data-act="tool" data-v="variants">${icon('export')}Variants…</button><button class="btn sm ghost" data-editor-act="build-sheet" title="A page with the recipe, sizes, material and weight, to keep with the print">${icon('export')}Build sheet</button></div>`;
+    <div class="row"><button class="btn primary sm" data-act="export">${icon('export')}Export STL</button>${buck.result?.info ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export buck</button>` : ''}${buck.result?.windows?.print.indices.length ? `<button class="btn sm" data-act="buck-export" data-v="each">${icon('export')}Export window bucks</button>` : ''}<button class="btn sm ghost" data-act="tool" data-v="variants">${icon('export')}Variants…</button><button class="btn sm ghost" data-editor-act="build-sheet" title="A page with the recipe, sizes, material and weight, to keep with the print">${icon('export')}Build sheet</button></div>`;
 }
 
 const TOOL_MENU = { bodyshape: 'shape', featurelayout: 'shape', panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', fix: 'repair', openings: 'repair', parts: 'repair', solid: 'repair', rebuild: 'repair', symmetry: 'repair', clearance: 'chassis', tabs: 'posts', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck', lenses: 'buck' };
@@ -3370,7 +3373,7 @@ function stepDetail(step, info) {
     return `${p.faces ? `${runCount(p.faces).toLocaleString()} selected triangles` : `${p.strokes.length} brush spot${p.strokes.length === 1 ? '' : 's'}`} · strength ${p.strength}${p.protect ? ' · inside only' : ''}`;
   if (step.type === 'addpart') return `${esc(p.name)} · ${p.join ? 'joined' : 'its own print'}${p.place?.pair ? ' · a pair' : ''}`;
   if (step.type === 'windows')
-    return `${p.windows.length} window${p.windows.length === 1 ? '' : 's'}${info ? ` · ${info.cut} cut` : ''}${info?.filled ? ` · ${info.filled} closed` : ''}${info?.recessed ? ` · ${info.recessed} recessed` : ''}${info?.outside ? ` · ${info.outside} glass outside` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
+    return `${p.windows.length} window${p.windows.length === 1 ? '' : 's'}${info ? ` · ${info.cut} cut` : ''}${info?.alreadyOpen ? ` · ${info.alreadyOpen} already open` : ''}${info?.filled ? ` · ${info.filled} closed` : ''}${info?.recessed ? ` · ${info.recessed} recessed` : ''}${info?.outside ? ` · ${info.outside} glass outside` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
   if (step.type === 'posts')
     return `${p.posts.length} × ${p.type?.name ?? 'post'}${p.length > 0 ? `, ${fmtLen(p.length, u, 1)} long` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
   if (step.type === 'lights') return `${p.lights.length} LED${p.lights.length === 1 ? '' : 's'}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
@@ -4442,6 +4445,7 @@ const actions = {
   },
   'win-new'() {
     ui.win.editing = null;
+    ui.win.smooth = null;
     ui.win.draft = { id: newId(), name: '', points: [], corners: [], normals: [], normal: [0, -1, 0], mirror: project.mirror, open: true };
     setPointer('line');
     renderAll();
@@ -4466,6 +4470,7 @@ const actions = {
   },
   'win-edit'(id) {
     ui.win.draft = null;
+    ui.win.smooth = null;
     ui.win.editing = ui.win.editing === id ? null : id;
     setPointer(ui.win.editing ? 'line' : 'look');
     renderAll();
@@ -4513,9 +4518,6 @@ const actions = {
     }
     ui.traceEdges = [...(ui.traceEdges ?? []), ...edges];
     ui.trace = null;
-    // The step keeps the glass settings it was built with.
-    const step = windowsStep();
-    if (step) commit(() => (step.params = { ...glassSettings(step), ...step.params }), false);
     setWindows([...allWindows(), ...added]);
     toast(`${added.length} window${added.length === 1 ? '' : 's'} added. Change any outline with its pencil.`);
   },
@@ -4572,6 +4574,9 @@ const actions = {
   },
   'buck-marks'(v) {
     setBuckSetting('marks', v);
+  },
+  'buck-span'() {
+    setBuckSetting('span', buckSettings().span === false);
   },
   'post-fixed'(v) {
     postOptions().fixed = v === '1';

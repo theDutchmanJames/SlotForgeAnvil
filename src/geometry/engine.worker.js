@@ -123,7 +123,9 @@ const methods = {
     const all = win?.params.windows ?? [];
     const cabinWins = opts.mode === 'each' ? [] : all.filter((w) => !outside(w));
     let cabin = null;
-    if (opts.mode !== 'each' && cabinWins.some((w) => !w.lens)) {
+    // The insert: unless every window there is has its glass on the outside
+    // (with no windows at all it is made from the trim line and cabin alone).
+    if (opts.mode !== 'each' && (cabinWins.some((w) => !w.lens) || !all.some((w) => outside(w) && !w.lens))) {
       const outlines = windowOutlines(cabinWins).map((o) => ({ name: name(o), points: o.points, normal: o.normal }));
       cabin = makeBuck(uncut, { ...opts, outlines, posts: posts?.params.posts ?? [] });
     }

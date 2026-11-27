@@ -474,15 +474,27 @@ export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane
     if (closed.error) report.push({ name, text: closed.error });
     else report.push({ name, ok: true });
   }
-  // Crumbs a cut along a rim left loose (a few triangles): they go. Parts
-  // the body had before stay.
+  // Crumbs a cut along a rim left loose (a few triangles, where a window
+  // was cut): they go. Parts the body had elsewhere stay, however small.
   let crumbs = 0;
-  if (open.length) {
-    const before = partsOf(mesh.indices.length / 3, pairEdges(mesh.indices, mesh.positions.length / 3, mesh.positions).twins).sizes.length;
+  const cutters = open.filter((o) => !already.has(o)).map((o) => cutter(o.points, o.normal, depth));
+  if (cutters.length) {
     const { part, sizes } = partsOf(m.indices.length / 3, pairEdges(m.indices, m.positions.length / 3, m.positions).twins);
-    if (sizes.length > before) {
+    if (sizes.length > 1) {
       const total = m.indices.length / 3;
-      const small = sizes.map((x) => x < Math.max(24, total * 2e-4));
+      // Each part's middle, to see whether it lies where a window was cut.
+      const mid = sizes.map(() => [0, 0, 0]), count = new Float64Array(sizes.length);
+      for (let t = 0; t < part.length; t++) {
+        const v = m.indices[t * 3] * 3;
+        for (let k = 0; k < 3; k++) mid[part[t]][k] += m.positions[v + k];
+        count[part[t]]++;
+      }
+      const atCut = (p) =>
+        cutters.some((c) => {
+          const x = dot(p, c.u), y = dot(p, c.v), s2 = dot(p, c.d) - c.at(x, y);
+          return c.inside2d(x, y) > -2 && s2 > c.lo - 1 && s2 < c.hi + 1;
+        });
+      const small = sizes.map((x, i) => x < Math.max(24, total * 2e-4) && atCut(mid[i].map((q) => q / count[i])));
       const keep = [];
       for (let t = 0; t < part.length; t++) {
         if (small[part[t]]) crumbs++;

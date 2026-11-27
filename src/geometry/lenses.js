@@ -169,7 +169,9 @@ function liftedPatch(pos, ids, pts, height, fallback) {
   // Outline corners by their place, as the patch stores it (single precision).
   const ring = new Map();
   pts.forEach(([x, y], i) => ring.set(`${Math.fround(x)},${Math.fround(y)}`, i));
-  const fine = refine({ positions: Float32Array.from(flat0), indices: Uint32Array.from(tris.flat()) }, (a, b) => {
+  // Two outline points in one place would make its edges ambiguous: then
+  // the patch stays as it was triangulated.
+  const fine = ring.size < n ? { positions: Float32Array.from(flat0), indices: Uint32Array.from(tris.flat()) } : refine({ positions: Float32Array.from(flat0), indices: Uint32Array.from(tris.flat()) }, (a, b) => {
     const len = Math.hypot(a[0] - b[0], a[1] - b[1]);
     if (len <= most) return false;
     // An outline edge: both ends on the outline, next to each other.
