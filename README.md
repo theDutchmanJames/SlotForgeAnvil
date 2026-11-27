@@ -50,7 +50,7 @@ Click any picture to open it at full size.
 
 ## Features and functionality
 
-Anvil works along eight menus, roughly in the order you build a body: **Repair, Scale, Chassis, Shell, Shape, Windows, Posts and Buck**. Every action becomes a step in the list on the right, which you can change, switch off or remove later. Undo and redo work as you expect.
+Anvil works along eight menus, roughly in the order you build a body: **Repair, Scale, Chassis, Shell, Shape, Windows, Posts and Glass**. Every action becomes a step in the list on the right, which you can change, switch off or remove later. Undo and redo work as you expect.
 
 ### Open, check and repair
 
@@ -93,8 +93,10 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 ### Windows and glazing
 
 - **Windows:** draw each window with the line tool; a smooth line runs through your points. Open windows are cut through the wall with a clean edge; side windows are mirrored. A window can also close an opening the model came with (a pane as thick as the wall, drawn round the opening on its frame), or be recessed: the glass sinks a fraction so a painted window gets a crisp edge.
-- **Window buck:** one plug for the whole cabin to vac-form a glazing insert that is glued in from the inside, with a trim line, glue margin and raised guide lines.
-- **Light lenses:** mark a headlight or taillight as an open window with Lens on, and Anvil makes a clear lens that fits its opening exactly, from the same outline: printed in clear resin (flush with the body, with a lip behind the wall), or vac-formed over a small lens buck and glued in from the inside. Both export laid out, ready to print.
+- **Find windows:** Anvil traces the windows the model has (openings it came with, glass that is a part of its own, panes set into a frame) and adds them as outlines with few points and sharp corners; left and right side windows become one mirrored window. Lights and grilles low on the body are listed to tick. Spots where an outline dents in are marked to check. While you change an outline, a dragged point snaps to the edge that was found, and **Smooth a stretch** takes out the points between two you pick.
+- **Where the glass sits:** per window, **inside** (behind the wall, glued in from inside), **outside, flush** (in a rebate, its face level with the body), **outside, on top** (on the body, overlapping the opening) or **set in** (a stepped seat it fills, a press fit). A **set back** sinks the glass into its frame, and each window can have its own glass thickness. Where a rebate would leave the wall too thin, the wall behind it is thickened on the inside.
+- **Glazing buck:** plugs to vac-form clear sheet over. **One insert** for the whole cabin, glued in from the inside, with a trim line and glue margin; its windows show as a fine line, as **raised** areas with a sharp edge to trim along, or as a **groove** for the knife. Or **a buck per window**, each shaped for where its glass sits; glass on the outside always gets its own. Openings the model came with are spanned smoothly, so the buck never drops into them.
+- **Clear parts:** printed glass for every window and light, from the same outline that cuts the opening and shaped for where its glass sits: a lens with a lip behind the wall, a pane in the rebate, a pane on top, or a pane with a plug for a set-in seat. The face and the back follow the body exactly. For clear resin or clear filament; lights with glass inside also get a small lens buck. All export laid out, ready to print.
 
 ### Shape and finish
 
