@@ -50,7 +50,7 @@ import {
 import { POST_TYPES, checkPostType, fitTestPiece, loosePost } from './geometry/posts.js';
 import { TAB_DEFAULTS } from './geometry/mounts.js';
 import { REBUILD_DETAIL, rebuildCell } from './geometry/rebuild.js';
-import { pillarWarnings, windowOutlines, windowState } from './geometry/windows.js';
+import { GLASS_DEFAULTS, glassOf, pillarWarnings, windowOutlines, windowState } from './geometry/windows.js';
 import { sampleClosedCurve } from './geometry/curve.js';
 import { BUCK_DEFAULTS } from './geometry/buck.js';
 import { LENS_DEFAULTS } from './geometry/lenses.js';
@@ -554,8 +554,8 @@ function applySection() {
 function head(title, text) {
   return `<div class="head"><div class="cond">${title}</div><div class="muted">${text}</div></div>`;
 }
-function numField(field, value, units, step = 'any') {
-  return `<span class="num"><input data-field="${field}" type="number" step="${step}" value="${value}">${units ? `<small>${units}</small>` : ''}</span>`;
+function numField(field, value, units, step = 'any', attrs = '') {
+  return `<span class="num"><input data-field="${field}" type="number" step="${step}" value="${value}"${attrs ? ' ' + attrs : ''}>${units ? `<small>${units}</small>` : ''}</span>`;
 }
 const unitLabel = () => project.units;
 
@@ -2543,7 +2543,35 @@ function setWindows(windows) {
       if (at < 0) project.steps.push(step);
       else project.steps.splice(at, 0, step);
     }
-    step.params = { windows, depth: step.params.depth ?? cutDepth(), fine: true, pane: step.params.pane ?? round(hollowWall() ?? 1, 3), recess: step.params.recess ?? 0.3 };
+    step.params = { ...step.params, windows, depth: step.params.depth ?? cutDepth(), fine: true, pane: step.params.pane ?? round(hollowWall() ?? 1, 3), recess: step.params.recess ?? 0.3 };
+  });
+}
+
+// The glass settings of the windows step, with defaults for this print.
+const GLASS_NAMES = [
+  ['inside', 'Inside', 'Behind the wall, glued in from inside. The opening is the outline'],
+  ['flush', 'Outside, flush', 'In a rebate on the outside, its face level with the body'],
+  ['top', 'Outside, on top', 'On the outside, overlapping the opening, standing proud by its thickness'],
+  ['setin', 'Set in', 'A stepped seat: the pane fills the opening and rests on the step, a press fit'],
+];
+function glassSettings(step = windowsStep()) {
+  const p = step?.params ?? {};
+  return {
+    glassThick: p.glassThick ?? (printOf().process === 'resin' ? 0.6 : 1),
+    overlap: p.overlap ?? GLASS_DEFAULTS.overlap,
+    minWall: p.minWall ?? PRINT_WALLS[printOf().process].min,
+  };
+}
+function setGlassSetting(key, value) {
+  const step = windowsStep();
+  if (step) commit(() => (step.params = { ...glassSettings(step), ...step.params, [key]: value }));
+}
+function setWindowGlass(id, change) {
+  const step = windowsStep();
+  if (!step) return;
+  commit(() => {
+    // The step keeps the glass settings it was built with.
+    step.params = { ...glassSettings(step), ...step.params, windows: step.params.windows.map((w) => (w.id === id ? { ...w, ...change } : w)) };
   });
 }
 
@@ -2615,16 +2643,26 @@ function panelWindows(editing) {
         ${windowState(w) === 'open' ? `<button class="btn sm icon ghost${w.lens ? ' on' : ''}" data-act="win-lens" data-v="${w.id}" title="${w.lens ? 'A light: Buck › Light lenses makes a lens for it. Click to make it a plain window again' : 'Lens: a headlight or taillight. Buck › Light lenses then makes a clear lens that fits it'}">${icon('bulb')}</button>` : ''}
         <button class="btn sm icon ghost" data-act="win-mirror" data-v="${w.id}" title="${w.mirror ? 'Only this side' : 'Both sides'}">${icon('mirror')}</button>
         <button class="btn sm icon ghost" data-act="win-edit" data-v="${w.id}" title="Change the outline">${icon('line')}</button>
-        <button class="btn sm icon ghost" data-act="win-delete" data-v="${w.id}" title="Remove this window">${icon('trash')}</button></div>`,
+        <button class="btn sm icon ghost" data-act="win-delete" data-v="${w.id}" title="Remove this window">${icon('trash')}</button></div>
+        ${windowState(w) === 'open' ? glassRow(w) : ''}`,
     )
     .join('');
   const states = new Set(wins.map(windowState));
+  const gs = glassSettings(step);
+  const outside = wins.some((w) => windowState(w) === 'open' && glassOf(w) !== 'inside');
+  const rebate = wins.some((w) => windowState(w) === 'open' && ['flush', 'setin'].includes(glassOf(w)));
+  const glassFields = outside
+    ? `<div class="f">Glass<div class="g2"><span class="fx">Thickness${numField('win-glass-thick', round(toUnits(gs.glassThick, u), 2), u)}</span><span class="fx">Overlap${numField('win-overlap', round(toUnits(gs.overlap, u), 2), u)}</span>${rebate ? `<span class="fx">Thinnest wall behind${numField('win-min-wall', round(toUnits(gs.minWall, u), 2), u)}</span>` : ''}</div>
+      <span class="muted" style="font-weight:400;font-size:12px">Glass on the outside overlaps the body round the opening by the overlap, so the opening is that much smaller than the outline.${rebate ? ' A rebate is as deep as the glass plus its set-back; where the wall behind would get thinner than shown, it is thickened on the inside.' : ''} Set the thickness to the clear sheet or the printed glass you use.</span></div>`
+    : '';
   const sizes = [
     states.has('fill') ? `<span class="fx">Closed window's pane${numField('win-pane', round(toUnits(step.params.pane ?? hollowWall() ?? 1, u), 2), u)}</span>` : '',
     states.has('recess') ? `<span class="fx">Recessed windows sink${numField('win-recess', round(toUnits(step.params.recess ?? 0.3, u), 2), u)}</span>` : '',
   ].join('');
   return `${head('Windows', 'Each window is an outline on the body. Open: cut through the wall. Solid: only marked (for the buck). Close: a pane fills an opening the model came with (draw round the opening on its frame). Recessed: the glass sinks a little, so a painted window gets a crisp edge. Headlights and taillights: draw them here too, Open, with Lens on.')}
     ${sizes ? `<div class="g2">${sizes}</div>` : ''}
+    ${glassFields}
+    ${info?.info?.rebates ? `<div class="note">${info.info.rebates} rebate${info.info.rebates === 1 ? '' : 's'} for the glass${info.info.thickened ? `; the wall behind thickened at ${info.info.thickened.toLocaleString()} points` : ''}.</div>` : ''}
     ${hollow ? '' : '<div class="muted" style="font-size:12px">Open windows cut through a shell wall. If the body is still solid, run Shell › Hollow first.</div>'}
     ${tool}
     ${wins.length ? `<div class="f">${wins.length} window${wins.length === 1 ? '' : 's'}<div class="plist">${rows}</div></div>` : ''}
@@ -2632,6 +2670,17 @@ function panelWindows(editing) {
     ${pillars.map((p) => `<div class="note warn">${esc(p.text)}: the pillar will be very thin.</div>`).join('')}
     ${(info?.info?.warnings ?? []).map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
     ${drawing || d ? '' : ''}`;
+}
+
+// An open window's glass: where it sits, how far back, and its own thickness.
+function glassRow(w) {
+  const u = project.units;
+  const kind = glassOf(w);
+  return `<div class="row" style="gap:6px;flex-wrap:wrap;margin:2px 0 8px">
+      <select data-field="wg-glass" data-win="${w.id}" title="Where the glass sits">${GLASS_NAMES.map(([k, n, t]) => `<option value="${k}" title="${t}"${k === kind ? ' selected' : ''}>${n}</option>`).join('')}</select>
+      <span class="fx" title="How far the glass face sits back from the body's outside: 0 is flush">Set back${numField('wg-depth', round(toUnits(w.depth ?? 0, u), 2), u, 'any', `data-win="${w.id}"`)}</span>
+      <span class="fx" title="This window's own glass thickness; empty: the step's">Thickness${numField('wg-thick', w.thick > 0 ? round(toUnits(w.thick, u), 2) : '', u, 'any', `data-win="${w.id}" placeholder="${round(toUnits(glassSettings().glassThick, u), 2)}"`)}</span>
+    </div>`;
 }
 
 // The line tool on the body.
@@ -3204,7 +3253,7 @@ function stepDetail(step, info) {
     return `${p.faces ? `${runCount(p.faces).toLocaleString()} selected triangles` : `${p.strokes.length} brush spot${p.strokes.length === 1 ? '' : 's'}`} · strength ${p.strength}${p.protect ? ' · inside only' : ''}`;
   if (step.type === 'addpart') return `${esc(p.name)} · ${p.join ? 'joined' : 'its own print'}${p.place?.pair ? ' · a pair' : ''}`;
   if (step.type === 'windows')
-    return `${p.windows.length} window${p.windows.length === 1 ? '' : 's'}${info ? ` · ${info.cut} cut` : ''}${info?.filled ? ` · ${info.filled} closed` : ''}${info?.recessed ? ` · ${info.recessed} recessed` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
+    return `${p.windows.length} window${p.windows.length === 1 ? '' : 's'}${info ? ` · ${info.cut} cut` : ''}${info?.filled ? ` · ${info.filled} closed` : ''}${info?.recessed ? ` · ${info.recessed} recessed` : ''}${info?.outside ? ` · ${info.outside} glass outside` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
   if (step.type === 'posts')
     return `${p.posts.length} × ${p.type?.name ?? 'post'}${p.length > 0 ? `, ${fmtLen(p.length, u, 1)} long` : ''}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
   if (step.type === 'lights') return `${p.lights.length} LED${p.lights.length === 1 ? '' : 's'}${info?.warnings?.length ? ` · ${info.warnings.length} warning${info.warnings.length === 1 ? '' : 's'}` : ''}`;
@@ -4615,6 +4664,19 @@ document.addEventListener('change', (e) => {
     const step = windowsStep();
     if (step && v > 0) commit(() => (step.params = { ...step.params, depth: round(v, 3) }));
     return;
+  }
+  if (f === 'wg-glass') return setWindowGlass(e.target.dataset.win, { glass: e.target.value });
+  if (f === 'wg-depth' || f === 'wg-thick') {
+    const raw = e.target.value.trim();
+    const v = fromUnits(Number(raw), project.units);
+    if (f === 'wg-thick' && raw === '') return setWindowGlass(e.target.dataset.win, { thick: undefined });
+    if (!Number.isFinite(v) || v < 0 || (f === 'wg-thick' && v === 0)) return renderPanel();
+    return setWindowGlass(e.target.dataset.win, { [f === 'wg-depth' ? 'depth' : 'thick']: round(v, 3) });
+  }
+  if (f === 'win-glass-thick' || f === 'win-overlap' || f === 'win-min-wall') {
+    const v = fromUnits(Number(e.target.value), project.units);
+    if (!(v > 0)) return renderPanel();
+    return setGlassSetting({ 'win-glass-thick': 'glassThick', 'win-overlap': 'overlap', 'win-min-wall': 'minWall' }[f], round(v, 3));
   }
   if (f === 'win-pane' || f === 'win-recess') {
     const v = fromUnits(Number(e.target.value), project.units);

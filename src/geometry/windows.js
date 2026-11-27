@@ -2,10 +2,17 @@
 // window is cut straight through the wall, along the direction the window
 // faces, and the cut is closed with a strip between the outer and the inner
 // skin. A solid window is only an outline (for the buck's trim guides).
+// Where an open window's glass sits (see glassOf) changes the cut: glass on
+// the outside overlaps the body, so the hole is the outline made smaller by
+// the overlap; flush and set-in glass also gets a rebate, the outside inside
+// the outline sunk by the glass thickness and its set-back, with the wall
+// behind it thickened where it would get too thin.
 // Car frame: X along (front low), Y across (centre line 0), Z up.
 import { clip } from './arches.js';
+import { offsetOutline } from './lenses.js';
+import { rayCaster } from './rays.js';
 import { mirrorPoint, sampleClosedCurve } from './curve.js';
-import { applyText } from './detail.js';
+import { applyText, refine } from './detail.js';
 import { fillLoop } from './fill.js';
 import { boundaryLoops, joinMeshes, pairEdges } from './topology.js';
 
@@ -61,13 +68,35 @@ export function cutter(points, normal, depth) {
   }
   const size = Math.max(maxX - minX, maxY - minY);
   const lo = -(resid + size * 0.15 + 0.5), hi = resid + depth;
-  // Positive inside the shape, by the distance to its edge.
+  // Positive inside the shape, by the distance to its edge: exact within a
+  // grid cell of the edge, at least a cell further off (the cut only needs
+  // the sign there). Segments are kept per cell (for the distance) and per
+  // row (for inside or out), so a long outline stays quick on a fine mesh.
+  const cell = Math.max(0.3, size / 48);
+  const gx = Math.ceil((maxX - minX) / cell) + 3, gy = Math.ceil((maxY - minY) / cell) + 3;
+  const cx = (x) => Math.floor((x - minX) / cell) + 1, cy = (y) => Math.floor((y - minY) / cell) + 1;
+  const cells = new Map(), rows = Array.from({ length: gy }, () => []);
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    for (let r = Math.max(0, cy(Math.min(yi, yj))); r <= Math.min(gy - 1, cy(Math.max(yi, yj))); r++) rows[r].push(j);
+    for (let a = cx(Math.min(xi, xj)) - 1; a <= cx(Math.max(xi, xj)) + 1; a++)
+      for (let r = cy(Math.min(yi, yj)) - 1; r <= cy(Math.max(yi, yj)) + 1; r++) {
+        const k = a * gy + r;
+        if (!cells.has(k)) cells.set(k, []);
+        cells.get(k).push(j);
+      }
+  }
   const inside2d = (x, y) => {
     if (x < minX - 1 || x > maxX + 1 || y < minY - 1 || y > maxY + 1) return -1;
-    let best = Infinity, odd = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    const r = cy(y);
+    let odd = false;
+    for (const j of rows[Math.max(0, Math.min(gy - 1, r))] ?? []) {
+      const [xj, yj] = poly[j], [xi, yi] = poly[(j + 1) % poly.length];
       if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) odd = !odd;
+    }
+    let best = cell;
+    for (const j of cells.get(cx(x) * gy + r) ?? []) {
+      const [xj, yj] = poly[j], [xi, yi] = poly[(j + 1) % poly.length];
       const ex = xi - xj, ey = yi - yj;
       const t = Math.max(0, Math.min(1, ((x - xj) * ex + (y - yj) * ey) / (ex * ex + ey * ey || 1)));
       best = Math.min(best, Math.hypot(x - xj - t * ex, y - yj - t * ey));
@@ -101,39 +130,300 @@ function solve3(M, r) {
 //   recess: sink the glass a fraction, for a crisp painted window
 export const windowState = (w) => w.state ?? (w.open === false ? 'solid' : 'open');
 
-// params: { windows: [{ id, name, points, corners, normal, mirror, state }], depth, pane, recess }
+// Where an open window's glass sits:
+//   inside: behind the wall, glued in from inside (the opening is the outline)
+//   flush:  in a rebate on the outside, its face level with the body
+//   top:    on the outside, standing proud by its thickness
+//   setin:  in a stepped seat: a flange in the rebate and a plug filling the
+//           opening, a press fit
+// depth: how far the glass face sits back from the body's outside (0: flush).
+export const GLASS_KINDS = ['inside', 'flush', 'top', 'setin'];
+export const GLASS_DEFAULTS = { glassThick: 1, overlap: 1.5, minWall: 0.6 };
+export const glassOf = (w) => (GLASS_KINDS.includes(w.glass) ? w.glass : 'inside');
+// The glass of a window: kind, thickness, set-back and overlap, with the step's defaults.
+export function glassFor(w, params = {}) {
+  const o = { ...GLASS_DEFAULTS, ...params };
+  const kind = glassOf(w);
+  return {
+    kind,
+    thick: w.thick > 0 ? w.thick : o.glassThick,
+    depth: Math.max(0, w.depth ?? 0),
+    overlap: kind === 'inside' ? 0 : o.overlap,
+    rebate: kind === 'flush' || kind === 'setin',
+  };
+}
+
+// A window outline made smaller by `by` along the body: the outline in the
+// window's own frame, moved in, put back on its plane.
+export function insetOutline(points, normal, by) {
+  if (!(by > 0)) return points;
+  const c = cutter(points, normal, 1);
+  return insetPoly(c.poly, by).map(([x, y]) => {
+    const s = c.at(x, y);
+    return [0, 1, 2].map((k) => x * c.u[k] + y * c.v[k] + s * c.d[k]);
+  });
+}
+// A closed outline in its plane, moved in by `by`. Each point moves square
+// to its own edges, so near a sharp corner points end up past the corner,
+// closer to the other edge than `by`: those go, which leaves the corner
+// itself. Empty when nothing fits.
+export function insetPoly(poly, by) {
+  const inner = offsetOutline(poly, -by).filter(([x, y]) => edgeDistance(poly, x, y) > by * 0.98);
+  return inner.length >= 3 ? inner : [];
+}
+// How far a point is from a closed outline's edge.
+function edgeDistance(poly, x, y) {
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    const ex = xi - xj, ey = yi - yj;
+    const t = Math.max(0, Math.min(1, ((x - xj) * ex + (y - yj) * ey) / (ex * ex + ey * ey || 1)));
+    best = Math.min(best, Math.hypot(x - xj - t * ex, y - yj - t * ey));
+  }
+  return best;
+}
+// The area of a closed outline in its frame (0 when it turned inside out).
+function areaOf(poly) {
+  let a = 0;
+  for (let i = 0; i < poly.length; i++) a += poly[i][0] * poly[(i + 1) % poly.length][1] - poly[(i + 1) % poly.length][0] * poly[i][1];
+  return a / 2;
+}
+
+// Thicken the wall behind a rebate: the inside skin under the outline (and a
+// ramp round it) moves in until the wall, measured along the window's
+// facing, is at least `want`. keep: how far in from the outline the wall
+// stays (the overlap; the rest is cut away). Returns the mesh and how many
+// points moved.
+function thickenBehind(mesh0, o, want, ramp, keep = Infinity) {
+  const c = cutter(o.points, o.normal, 1);
+  const reach0 = want * 3 + 6;
+  // Signed distance to the outline (inside > 0), -Infinity well clear of it.
+  let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+  for (const [x, y] of c.poly) (lo = [Math.min(lo[0], x), Math.min(lo[1], y)]), (hi = [Math.max(hi[0], x), Math.max(hi[1], y)]);
+  const pad = ramp + 1;
+  const dist = (x, y) => {
+    if (x < lo[0] - pad || x > hi[0] + pad || y < lo[1] - pad || y > hi[1] + pad) return -Infinity;
+    let best = Infinity, odd = false;
+    const poly = c.poly;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) odd = !odd;
+      const ex = xi - xj, ey = yi - yj;
+      const t = Math.max(0, Math.min(1, ((x - xj) * ex + (y - yj) * ey) / (ex * ex + ey * ey || 1)));
+      best = Math.min(best, Math.hypot(x - xj - t * ex, y - yj - t * ey));
+    }
+    return odd ? best : -best;
+  };
+  // The inside skin there fine enough to follow the rebate (it is often
+  // coarse: a flat panel's inner wall in a few big triangles).
+  const near = (p) => {
+    const x = dot(p, c.u), y = dot(p, c.v);
+    if (Math.abs(dot(p, c.d) - c.at(x, y)) >= reach0) return false;
+    const k = dist(x, y);
+    return k > -ramp - 1 && k < keep + 1;
+  };
+  const mesh = refine(mesh0, (a, b, fn) => dot(fn, c.d) > 0.3 && Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) > 0.8 && (near(a.map((q, k) => (q + b[k]) / 2)) || near(a) || near(b)));
+  const P = Float32Array.from(mesh.positions);
+  const I = mesh.indices;
+  const N = new Float32Array(P.length);
+  for (let f = 0; f < I.length; f += 3) {
+    const a = I[f] * 3, b = I[f + 1] * 3, q = I[f + 2] * 3;
+    const n = cross([P[b] - P[a], P[b + 1] - P[a + 1], P[b + 2] - P[a + 2]], [P[q] - P[a], P[q + 1] - P[a + 1], P[q + 2] - P[a + 2]]);
+    for (const v of [a, b, q]) for (let k = 0; k < 3; k++) N[v + k] += n[k];
+  }
+  const cast = rayCaster(mesh.positions, I);
+  const out = c.d.map((x) => -x);
+  const reach = want * 3 + 6;
+  let moved = 0;
+  for (let v = 0; v < P.length / 3; v++) {
+    const p = [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]];
+    const x = dot(p, c.u), y = dot(p, c.v);
+    const k = dist(x, y);
+    if (k < -ramp || k > keep + 1) continue;
+    // Only the inside skin just behind the window: facing into the car.
+    const n = [N[v * 3], N[v * 3 + 1], N[v * 3 + 2]];
+    const nl = Math.hypot(...n);
+    if (!nl || dot(n, c.d) / nl < 0.3) continue;
+    const s = dot(p, c.d) - c.at(x, y);
+    if (s < -reach || s > reach) continue;
+    const t = cast(p.map((q, j) => q + out[j] * 1e-3), out);
+    if (!(t < reach)) continue;
+    const wall = t + 1e-3;
+    if (wall >= want) continue;
+    const f = k >= 0 ? 1 : 1 + k / ramp;
+    const by = (want - wall) * f;
+    for (let j = 0; j < 3; j++) P[v * 3 + j] += c.d[j] * by;
+    moved++;
+  }
+  return { mesh: { positions: P, indices: I }, moved };
+}
+
+// Work on the patch of the body round a window only, then put it back: a
+// whole car is large, a window small. The patch is every triangle that
+// reaches into the outline's box (pad wider) in the window's frame, between
+// `from` and `to` from its plane. fn(patch) returns the patch changed,
+// keeping every corner it was given at its own number (moved or not) and
+// adding new ones after; the edge of the patch must be left as it was.
+function onPatch(mesh, o, pad, from, to, fn) {
+  const c = cutter(o.points, o.normal, 1);
+  let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+  for (const [x, y] of c.poly) (lo = [Math.min(lo[0], x), Math.min(lo[1], y)]), (hi = [Math.max(hi[0], x), Math.max(hi[1], y)]);
+  const P = mesh.positions, I = mesh.indices;
+  const V = P.length / 3;
+  const X = new Float64Array(V), Y = new Float64Array(V), S = new Float64Array(V);
+  for (let v = 0; v < V; v++) {
+    const p = [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]];
+    X[v] = dot(p, c.u);
+    Y[v] = dot(p, c.v);
+    S[v] = dot(p, c.d) - c.at(X[v], Y[v]);
+  }
+  const local = new Int32Array(V).fill(-1);
+  const ids = [], keep = [], sub = [];
+  for (let f = 0; f < I.length; f += 3) {
+    const a = I[f], b = I[f + 1], q = I[f + 2];
+    const inBox =
+      Math.max(X[a], X[b], X[q]) >= lo[0] - pad && Math.min(X[a], X[b], X[q]) <= hi[0] + pad &&
+      Math.max(Y[a], Y[b], Y[q]) >= lo[1] - pad && Math.min(Y[a], Y[b], Y[q]) <= hi[1] + pad &&
+      Math.max(S[a], S[b], S[q]) >= from && Math.min(S[a], S[b], S[q]) <= to;
+    if (!inBox) {
+      keep.push(a, b, q);
+      continue;
+    }
+    for (const v of [a, b, q]) {
+      if (local[v] < 0) (local[v] = ids.length), ids.push(v);
+      sub.push(local[v]);
+    }
+  }
+  if (!sub.length) return { mesh, result: fn(null) };
+  const sp = new Float32Array(ids.length * 3);
+  ids.forEach((v, i) => sp.set(P.subarray(v * 3, v * 3 + 3), i * 3));
+  const result = fn({ positions: sp, indices: Uint32Array.from(sub) });
+  const r = result.mesh;
+  // Back together: the patch's corners at their own numbers, new ones after.
+  const pos = new Float32Array((V + r.positions.length / 3 - ids.length) * 3);
+  pos.set(P);
+  ids.forEach((v, i) => pos.set(r.positions.subarray(i * 3, i * 3 + 3), v * 3));
+  pos.set(r.positions.subarray(ids.length * 3), V * 3);
+  const map = (i) => (i < ids.length ? ids[i] : V + i - ids.length);
+  const idx = new Uint32Array(keep.length + r.indices.length);
+  idx.set(keep);
+  for (let i = 0; i < r.indices.length; i++) idx[keep.length + i] = map(r.indices[i]);
+  return { mesh: compactMesh(pos, idx), result };
+}
+// Drop corners no triangle uses.
+function compactMesh(pos, idx) {
+  const map = new Int32Array(pos.length / 3).fill(-1);
+  let n = 0;
+  for (const v of idx) if (map[v] < 0) map[v] = n++;
+  const positions = new Float32Array(n * 3);
+  for (let v = 0; v < map.length; v++) if (map[v] >= 0) positions.set(pos.subarray(v * 3, v * 3 + 3), map[v] * 3);
+  return { positions, indices: Uint32Array.from(idx, (v) => map[v]) };
+}
+
+// The outside inside each outline sinks by its own depth, along the
+// window's facing (like cut-in text). list: [{ o, depth }]. Returns the mesh
+// and the names of outlines not on the body.
+function sinkOutlines(m, list) {
+  if (!list.length) return { mesh: m, missed: [] };
+  const missed = [];
+  for (const item of list) {
+    // As far round the plane as cut-in text looks (see applyText), and more.
+    const c = cutter(item.o.points, item.o.normal, 1);
+    let w = 0;
+    for (const p of c.poly) for (const q of c.poly) w = Math.max(w, Math.abs(p[0] - q[0]), Math.abs(p[1] - q[1]));
+    const reach = w * 0.6 + 8;
+    const r = onPatch(m, item.o, 8, -reach, reach, (patch) => {
+      if (!patch) return { mesh: null, missed: true };
+      const out = sinkAll(patch, [item]);
+      return { mesh: out.mesh, missed: out.missed.length > 0 };
+    });
+    if (r.result.missed) missed.push(`${item.o.window.name}${item.o.mirrored ? ' (mirrored)' : ''}`);
+    else m = r.mesh;
+  }
+  return { mesh: m, missed };
+}
+function sinkAll(m, list) {
+  const texts = list.map(({ o, depth }) => {
+    const c = cutter(o.points, o.normal, 1);
+    const mid = o.points.reduce((s, p) => [s[0] + p[0], s[1] + p[1], s[2] + p[2]], [0, 0, 0]).map((x) => x / o.points.length);
+    // The outline in the text frame: across (u) and up (v), round the middle, facing out (-d).
+    const up = cross(norm(c.d.map((x) => -x)), c.u);
+    const polys = [o.points.map((p) => [dot([p[0] - mid[0], p[1] - mid[1], p[2] - mid[2]], c.u), dot([p[0] - mid[0], p[1] - mid[1], p[2] - mid[2]], up)])];
+    return { at: mid, normal: c.d.map((x) => -x), up, polys, mode: 'cut', depth, name: `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}` };
+  });
+  const out = applyText(m, { texts, grain: 1.5 });
+  // applyText says "Text n is not on the body": name the window instead.
+  const missed = out.info.warnings.map((w) => texts[Number(/Text (\d+)/.exec(w)?.[1]) - 1]?.name ?? 'A window');
+  return { mesh: { positions: out.positions, indices: out.indices }, missed };
+}
+
+// params: { windows: [{ id, name, points, corners, normal, mirror, state,
+//                       glass, depth, thick }], depth, pane, recess,
+//           glassThick, overlap, minWall }
 //   depth:  how far behind the outline the cut reaches (wall + room to spare)
 //   pane:   how thick a filled window's pane is
 //   recess: how far a recessed window sinks
+//   glassThick, overlap: the glass's thickness, and how far glass on the
+//           outside overlaps the body round the opening (see glassFor)
+//   minWall: the thinnest wall left behind a rebate
 // fine: see clip (on for windows drawn now, off for those saved before).
-export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane = 1, recess = 0.3 }) {
+export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane = 1, recess = 0.3, ...rest }) {
+  const gp = { ...GLASS_DEFAULTS, ...rest };
   let m = mesh;
   const report = [];
   // Recessed windows: the outside within the outline moves in, like cut-in text.
   const sunk = windowOutlines(windows.filter((w) => windowState(w) === 'recess'));
   if (sunk.length) {
     if (!(recess > 0)) throw Error('Enter how far the recessed windows sink.');
-    const texts = sunk.map((o) => {
-      const c = cutter(o.points, o.normal, depth);
-      const mid = o.points.reduce((s, p) => [s[0] + p[0], s[1] + p[1], s[2] + p[2]], [0, 0, 0]).map((x) => x / o.points.length);
-      // The outline in the text frame: across (u) and up (v), round the middle, facing out (-d).
-      const up = cross(norm(c.d.map((x) => -x)), c.u);
-      const polys = [o.points.map((p) => [dot([p[0] - mid[0], p[1] - mid[1], p[2] - mid[2]], c.u), dot([p[0] - mid[0], p[1] - mid[1], p[2] - mid[2]], up)])];
-      return { at: mid, normal: c.d.map((x) => -x), up, polys, mode: 'cut', depth: recess, name: `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}` };
-    });
-    const out = applyText(m, { texts, grain: 1.5 });
-    m = out;
-    // applyText says "Text n is not on the body": name the window instead.
-    for (const w of out.info.warnings) {
-      const n = Number(/Text (\d+)/.exec(w)?.[1]);
-      report.push({ name: texts[n - 1]?.name ?? 'A recessed window', text: 'The outline is not on the body' });
-    }
+    const r = sinkOutlines(m, sunk.map((o) => ({ o, depth: recess })));
+    m = r.mesh;
+    for (const name of r.missed) report.push({ name, text: 'The outline is not on the body' });
   }
-  for (const o of windowOutlines(windows.filter((w) => windowState(w) === 'open'))) {
+  // Glass on the outside: rebates first (the wall behind thickened where
+  // needed), then the openings, the overlap smaller than the outline.
+  const open = windowOutlines(windows.filter((w) => windowState(w) === 'open'));
+  if (open.some((o) => glassOf(o.window) !== 'inside')) {
+    if (!(gp.glassThick > 0)) throw Error('Enter how thick the glass is.');
+    if (!(gp.overlap > 0)) throw Error('Enter how far the glass overlaps the body.');
+    if (!(gp.minWall > 0)) throw Error('Enter the thinnest wall behind a rebate.');
+  }
+  const rebates = open.filter((o) => glassFor(o.window, gp).rebate);
+  let thickened = 0;
+  for (const o of rebates) {
+    const g = glassFor(o.window, gp);
+    const want = g.thick + g.depth + gp.minWall, ramp = Math.max(2, g.overlap * 2);
+    const reach = want * 3 + 6;
+    const r = onPatch(m, o, ramp + 3, -reach - 2, reach + 2, (patch) => (patch ? thickenBehind(patch, o, want, ramp, g.overlap) : { mesh: null, moved: 0 }));
+    m = r.mesh;
+    thickened += r.result.moved;
+  }
+  if (rebates.length) {
+    const r = sinkOutlines(m, rebates.map((o) => ({ o, depth: glassFor(o.window, gp).thick + glassFor(o.window, gp).depth })));
+    m = r.mesh;
+    for (const name of r.missed) report.push({ name, text: 'The outline is not on the body' });
+  }
+  for (const o of open) {
     const name = `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}`;
-    const c = cutter(o.points, o.normal, depth);
-    const out = clip(m, c.f, fine);
-    if (!out.removed) {
+    const g = glassFor(o.window, gp);
+    let points = o.points;
+    if (g.overlap > 0) {
+      const c0 = cutter(o.points, o.normal, 1);
+      const inner = insetPoly(c0.poly, g.overlap);
+      const fits = inner.length >= 3 && inner.every(([x, y]) => c0.inside2d(x, y) > 0);
+      if (!fits || !(areaOf(inner) * areaOf(c0.poly) > 0) || Math.abs(areaOf(inner)) < Math.abs(areaOf(c0.poly)) * 0.1) {
+        report.push({ name, text: `The window is too small for a ${g.overlap} mm overlap: make the overlap smaller` });
+        continue;
+      }
+      points = insetOutline(o.points, o.normal, g.overlap);
+    }
+    const reach = g.rebate ? Math.max(depth, g.thick + g.depth + gp.minWall + 1.5) : depth;
+    const c = cutter(points, o.normal, reach);
+    const cut = onPatch(m, { ...o, points }, 2, c.lo - 2, c.hi + 2, (patch) => {
+      const r = patch ? clip(patch, c.f, fine, false) : { removed: 0 };
+      return { mesh: r, removed: r.removed };
+    });
+    const out = cut.result.removed ? cut.mesh : { removed: 0 };
+    if (!out.removed && !cut.result.removed) {
       report.push({ name, text: 'The outline is not on the body' });
       continue;
     }
@@ -157,7 +447,8 @@ export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane
     panes.push(paneIn(o.points, o.normal, pane));
   }
   if (panes.length) m = joinMeshes([m, ...panes]);
-  return { positions: m.positions, indices: m.indices, info: { cut: report.filter((r) => r.ok).length, filled: panes.length, recessed: sunk.length, warnings: report.filter((r) => !r.ok).map((r) => `${r.name}: ${r.text}`) } };
+  const info = { cut: report.filter((r) => r.ok).length, filled: panes.length, recessed: sunk.length, rebates: rebates.length, outside: open.filter((o) => glassOf(o.window) !== 'inside').length, thickened };
+  return { positions: m.positions, indices: m.indices, info: { ...info, warnings: report.filter((r) => !r.ok).map((r) => `${r.name}: ${r.text}`) } };
 }
 
 // A pane filling a window outline drawn round an opening: its outside is a

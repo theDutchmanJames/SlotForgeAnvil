@@ -261,8 +261,9 @@ function refineFor(mesh, f, rounds = 8) {
 // f = 0 are clipped, with the crossing found along each edge by bisection.
 // fine: split long edges that pass through the region first (see refineFor).
 // Steps saved before that existed leave it off, so they build as they did.
-// The mesh given is never changed.
-export function clip(mesh, f, fine = true) {
+// The mesh given is never changed. compact: false keeps every corner of the
+// mesh given, at its own number, the new ones after (for working on a patch).
+export function clip(mesh, f, fine = true, compact = true) {
   const src = fine ? refineFor(mesh, f) : mesh;
   const p = src.positions,
     idx = src.indices;
@@ -311,6 +312,7 @@ export function clip(mesh, f, fine = true) {
     }
     for (let k = 1; k + 1 < poly.length; k++) out.push(poly[0], poly[k], poly[k + 1]);
   }
+  if (!compact) return { positions: Float32Array.from(pos), indices: Uint32Array.from(out), removed };
   // Drop corners no triangle uses.
   const map = new Int32Array(pos.length / 3).fill(-1);
   let m = 0;

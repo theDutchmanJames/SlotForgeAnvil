@@ -7,10 +7,14 @@ export const FORMAT = 'slotforge-anvil-project';
 // the wrong shape. Projects without it are still written as version 1, so
 // older Anvils keep opening them.
 // Version 3 adds tilt, lean and mirror to Orient, which an older Anvil would
-// skip without a word; version 4 adds Smooth scan.
-export const VERSION = 4;
+// skip without a word; version 4 adds Smooth scan; version 5 adds where a
+// window's glass sits (outside, set in, set back, its own thickness).
+export const VERSION = 5;
+const glassUsed = (s) => s.type === 'windows' && (s.params.windows ?? []).some((w) => (w.glass && w.glass !== 'inside') || w.depth > 0 || w.thick > 0);
 export const fileVersion = (p) =>
-  p.steps.some((s) => s.type === 'scansmooth')
+  p.steps.some(glassUsed)
+    ? 5
+    : p.steps.some((s) => s.type === 'scansmooth')
     ? 4
     : p.steps.some((s) => s.type === 'orient' && (s.params.tilt || s.params.lean || s.params.mirror))
       ? 3
