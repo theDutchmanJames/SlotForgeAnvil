@@ -14,7 +14,7 @@ import { rayCaster } from './rays.js';
 import { mirrorPoint, sampleClosedCurve } from './curve.js';
 import { applyText, refine } from './detail.js';
 import { fillLoop } from './fill.js';
-import { boundaryLoops, joinMeshes, pairEdges } from './topology.js';
+import { boundaryLoops, joinMeshes, pairEdges, partsOf } from './topology.js';
 
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -383,6 +383,35 @@ export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane
   // Glass on the outside: rebates first (the wall behind thickened where
   // needed), then the openings, the overlap smaller than the outline.
   const open = windowOutlines(windows.filter((w) => windowState(w) === 'open'));
+  // An opening the model already has (Find windows traces its rim): there
+  // is nothing to cut, and cutting along the rim would only leave slivers
+  // (or close the opening up). Mostly open (a lip may reach in) counts.
+  // Looked at before anything changes: rays through the outline's middle,
+  // along its facing, that meet nothing within the cut's reach.
+  const already = new Set();
+  if (open.length) {
+    const cast = rayCaster(m.positions, m.indices);
+    for (const o of open) {
+      const c = cutter(o.points, o.normal, depth);
+      const inner = insetPoly(c.poly, Math.min(1, c.size * 0.05));
+      if (!inner.length) continue;
+      let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+      for (const [x, y] of inner) (lo = [Math.min(lo[0], x), Math.min(lo[1], y)]), (hi = [Math.max(hi[0], x), Math.max(hi[1], y)]);
+      let tried = 0, through = 0;
+      for (let a = 1; a < 10; a++)
+        for (let b = 1; b < 10; b++) {
+          const x = lo[0] + ((hi[0] - lo[0]) * a) / 10, y = lo[1] + ((hi[1] - lo[1]) * b) / 10;
+          // Well inside (the fast distance tops out at a grid cell).
+          if (!(c.inside2d(x, y) >= Math.min(0.5, c.inside2d.cell * 0.8))) continue;
+          tried++;
+          const s0 = c.at(x, y) + c.lo - 1;
+          const start = [0, 1, 2].map((k) => x * c.u[k] + y * c.v[k] + s0 * c.d[k]);
+          const t = cast(start, c.d);
+          if (!(s0 + t < c.at(x, y) + c.hi)) through++;
+        }
+      if (tried >= 8 && through >= tried * 0.6) already.add(o);
+    }
+  }
   if (open.some((o) => glassOf(o.window) !== 'inside')) {
     if (!(gp.glassThick > 0)) throw Error('Enter how thick the glass is.');
     if (!(gp.overlap > 0)) throw Error('Enter how far the glass overlaps the body.');
@@ -406,6 +435,10 @@ export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane
   for (const o of open) {
     const name = `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}`;
     const g = glassFor(o.window, gp);
+    if (already.has(o)) {
+      report.push({ name, ok: true, already: true });
+      continue;
+    }
     let points = o.points;
     if (g.overlap > 0) {
       const c0 = cutter(o.points, o.normal, 1);
@@ -441,6 +474,23 @@ export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane
     if (closed.error) report.push({ name, text: closed.error });
     else report.push({ name, ok: true });
   }
+  // Crumbs a cut along a rim left loose (a few triangles): they go. Parts
+  // the body had before stay.
+  let crumbs = 0;
+  if (open.length) {
+    const before = partsOf(mesh.indices.length / 3, pairEdges(mesh.indices, mesh.positions.length / 3, mesh.positions).twins).sizes.length;
+    const { part, sizes } = partsOf(m.indices.length / 3, pairEdges(m.indices, m.positions.length / 3, m.positions).twins);
+    if (sizes.length > before) {
+      const total = m.indices.length / 3;
+      const small = sizes.map((x) => x < Math.max(24, total * 2e-4));
+      const keep = [];
+      for (let t = 0; t < part.length; t++) {
+        if (small[part[t]]) crumbs++;
+        else keep.push(m.indices[t * 3], m.indices[t * 3 + 1], m.indices[t * 3 + 2]);
+      }
+      if (crumbs) m = { positions: m.positions, indices: Uint32Array.from(keep) };
+    }
+  }
   // Filled windows: a pane in each outline, joined to the frame round it.
   const panes = [];
   for (const o of windowOutlines(windows.filter((w) => windowState(w) === 'fill'))) {
@@ -448,7 +498,7 @@ export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane
     panes.push(paneIn(o.points, o.normal, pane));
   }
   if (panes.length) m = joinMeshes([m, ...panes]);
-  const info = { cut: report.filter((r) => r.ok).length, filled: panes.length, recessed: sunk.length, rebates: rebates.length, outside: open.filter((o) => glassOf(o.window) !== 'inside').length, thickened };
+  const info = { cut: report.filter((r) => r.ok && !r.already).length, alreadyOpen: report.filter((r) => r.already).length, filled: panes.length, recessed: sunk.length, rebates: rebates.length, crumbs, outside: open.filter((o) => glassOf(o.window) !== 'inside').length, thickened };
   return { positions: m.positions, indices: m.indices, info: { ...info, warnings: report.filter((r) => !r.ok).map((r) => `${r.name}: ${r.text}`) } };
 }
 

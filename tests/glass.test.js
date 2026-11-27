@@ -214,3 +214,22 @@ test('a buck per window: its surface where the formed pane fits the glass', asyn
   assert.ok(Math.abs(surface('top') + 20) < 0.02, 'on top: on the body');
   assert.ok(Math.abs(surface('setin', 0.3) + 19.2) < 0.02, 'set in: set-back and sheet in');
 });
+
+test('a window over an opening the model already has is left uncut, and its clear part spans the opening', async () => {
+  const { makeLenses } = await import('../src/geometry/lenses.js');
+  const { windowOutlines } = await import('../src/geometry/windows.js');
+  // The shell with its side window already open, then the same window drawn on its rim.
+  const opened = applyWindows(body, { windows: [side()], depth: 3, fine: true });
+  const again = applyWindows(opened, { windows: [side()], depth: 3, fine: true, ...glass });
+  assert.equal(again.info.alreadyOpen, 1);
+  assert.equal(again.info.cut, 0);
+  assert.equal(again.indices.length, opened.indices.length, 'nothing cut, nothing filled in');
+  // The clear part still comes: its face spans the opening, flush with the body round it.
+  const ol = windowOutlines([side()], 0.25).map((o) => ({ name: o.window.name, points: o.points, normal: o.normal }));
+  const r = makeLenses(opened, ol, { wall: 1 });
+  assert.deepEqual(r.info.warnings, []);
+  const P = r.car.lenses.positions;
+  let minY = Infinity;
+  for (let v = 1; v < P.length; v += 3) minY = Math.min(minY, P[v]);
+  assert.ok(Math.abs(minY + 20) < 0.05, `face at ${minY}`);
+});

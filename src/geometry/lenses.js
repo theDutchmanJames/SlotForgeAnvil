@@ -24,6 +24,7 @@
 import { tube } from './buck.js';
 import { fillLoop } from './fill.js';
 import { rayCaster } from './rays.js';
+import { refine } from './detail.js';
 import { applyReduce } from './reduce.js';
 import { consistentFlips, joinMeshes, pairEdges } from './topology.js';
 import { cutter, insetPoly } from './windows.js';
@@ -39,11 +40,102 @@ function lightFrame(o, cast, reach) {
   // How far out the outside is at x, y (h), or NaN where the ray misses the
   // body or only finds it well behind the opening (the far side of the car).
   const limit = -c.lo + 1 + reach;
-  const outside = (x, y) => {
+  const raw = (x, y) => {
     const s0 = c.at(x, y) + c.lo - 1;
     const t = cast(toCar(x, y, -s0), c.d);
     if (t === Infinity || s0 + t > c.at(x, y) + limit) return NaN;
     return -(s0 + t);
+  };
+  // An opening the model came with has no outside inside its outline: rays
+  // fall through, or meet the inside well behind the rim. There the glass
+  // gets a smooth skin across, grown in from the body round it (as glass
+  // would run), so its face still follows the car's curve.
+  let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+  for (const [x, y] of c.poly) (lo = [Math.min(lo[0], x), Math.min(lo[1], y)]), (hi = [Math.max(hi[0], x), Math.max(hi[1], y)]);
+  const g = Math.min(0.5, Math.max(0.1, c.size / 120));
+  const pad = 4;
+  const gx = Math.ceil((hi[0] - lo[0] + 2 * pad) / g) + 1, gy = Math.ceil((hi[1] - lo[1] + 2 * pad) / g) + 1;
+  const X0 = lo[0] - pad, Y0 = lo[1] - pad;
+  const inPoly = (x, y) => c.inside2d(x, y) > -0.3;
+  let H = null;
+  const fill = () => {
+    H = new Float32Array(gx * gy);
+    let hole = [];
+    const inside = [];
+    for (let i = 0; i < gx; i++)
+      for (let j = 0; j < gy; j++) {
+        const x = X0 + i * g, y = Y0 + j * g;
+        let h = raw(x, y);
+        // Behind the rim's own plane by more than a little: the inside, not glass.
+        if (inPoly(x, y) && Number.isFinite(h) && h < -c.at(x, y) - 0.5) h = NaN;
+        H[i * gy + j] = h;
+        if (inPoly(x, y)) inside.push(i * gy + j);
+        if (!Number.isFinite(h) && inPoly(x, y)) hole.push(i * gy + j);
+      }
+    if (!hole.length) return;
+    // Mostly open: whatever the rays met in there (a lip, a dashboard) is
+    // not glass either. The whole of it is grown in from round the rim.
+    if (hole.length > inside.length * 0.5) {
+      opening = true;
+      for (const q of inside) H[q] = NaN;
+      hole = inside;
+    }
+    let left = hole;
+    for (let round = 0; round < gx + gy && left.length; round++) {
+      const next = [], set = [];
+      for (const q of left) {
+        const i = Math.floor(q / gy), j = q % gy;
+        let sum = 0, n = 0;
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const a2 = i + di, b2 = j + dj;
+          if (a2 < 0 || b2 < 0 || a2 >= gx || b2 >= gy) continue;
+          const v = H[a2 * gy + b2];
+          if (Number.isFinite(v)) (sum += v), n++;
+        }
+        if (n) set.push([q, sum / n]);
+        else next.push(q);
+      }
+      if (!set.length) break;
+      for (const [q, v] of set) H[q] = v;
+      left = next;
+    }
+    // A soap film: over-relaxed, so it settles in a few hundred rounds
+    // even across a whole windscreen (plain averaging leaves ridges where
+    // the fronts grown in from each side met).
+    for (let it = 0; it < 600; it++) {
+      let most = 0;
+      for (const q of hole) {
+        const i = Math.floor(q / gy), j = q % gy;
+        let sum = 0, n = 0;
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const a2 = i + di, b2 = j + dj;
+          if (a2 < 0 || b2 < 0 || a2 >= gx || b2 >= gy) continue;
+          const v = H[a2 * gy + b2];
+          if (Number.isFinite(v)) (sum += v), n++;
+        }
+        if (!n) continue;
+        const d = 1.9 * (sum / n - H[q]);
+        H[q] += d;
+        most = Math.max(most, Math.abs(d));
+      }
+      if (most < 1e-4) break;
+    }
+    filled = true;
+  };
+  let filled = false, opening = false;
+  const outside = (x, y) => {
+    const h = raw(x, y);
+    const glassy = Number.isFinite(h) && !(inPoly(x, y) && h < -c.at(x, y) - 0.5);
+    if (!inPoly(x, y)) return glassy ? h : NaN;
+    if (!H) fill();
+    if (glassy && !opening) return h;
+    if (!filled) return NaN;
+    const fi = (x - X0) / g, fj = (y - Y0) / g;
+    const i = Math.max(0, Math.min(gx - 2, Math.floor(fi))), j = Math.max(0, Math.min(gy - 2, Math.floor(fj)));
+    const u = fi - i, w = fj - j;
+    const at = (p, q) => H[(i + p) * gy + j + q];
+    const v = at(0, 0) * (1 - u) * (1 - w) + at(1, 0) * u * (1 - w) + at(0, 1) * (1 - u) * w + at(1, 1) * u * w;
+    return Number.isFinite(v) ? v : NaN;
   };
   // How far out the inside of the wall is behind the outside at x, y: the
   // next surface along the ray, within a few wall thicknesses; else NaN.
@@ -64,9 +156,30 @@ function lightFrame(o, cast, reach) {
 // it cannot fold), its new points then lifted by height(x, y). The outline's
 // own corners keep the ids given. Returns its triangles.
 function liftedPatch(pos, ids, pts, height, fallback) {
-  const flat = [];
-  for (const [x, y] of pts) flat.push(x, y, 0);
-  const tris = fillLoop(flat, pts.map((_, i) => i), 'smooth');
+  const flat0 = [];
+  for (const [x, y] of pts) flat0.push(x, y, 0);
+  let tris = fillLoop(flat0, pts.map((_, i) => i), 'smooth');
+  // Small triangles across the whole patch, so a large curved pane (a
+  // windscreen) follows its surface instead of showing long flat facets.
+  // The outline's own edges stay whole: the bands round it join there.
+  const n = pts.length;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const [x, y] of pts) (x0 = Math.min(x0, x)), (x1 = Math.max(x1, x)), (y0 = Math.min(y0, y)), (y1 = Math.max(y1, y));
+  const most = Math.max(0.4, Math.min(1.5, Math.max(x1 - x0, y1 - y0) / 40));
+  // Outline corners by their place, as the patch stores it (single precision).
+  const ring = new Map();
+  pts.forEach(([x, y], i) => ring.set(`${Math.fround(x)},${Math.fround(y)}`, i));
+  const fine = refine({ positions: Float32Array.from(flat0), indices: Uint32Array.from(tris.flat()) }, (a, b) => {
+    const len = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    if (len <= most) return false;
+    // An outline edge: both ends on the outline, next to each other.
+    const ia = ring.get(`${a[0]},${a[1]}`), ib = ring.get(`${b[0]},${b[1]}`);
+    if (ia !== undefined && ib !== undefined && (Math.abs(ia - ib) === 1 || Math.abs(ia - ib) === n - 1)) return false;
+    return true;
+  });
+  const flat = Array.from(fine.positions);
+  tris = [];
+  for (let t = 0; t < fine.indices.length; t += 3) tris.push([fine.indices[t], fine.indices[t + 1], fine.indices[t + 2]]);
   const map = ids.slice();
   for (let v = pts.length; v < flat.length / 3; v++) {
     const x = flat[v * 3], y = flat[v * 3 + 1];

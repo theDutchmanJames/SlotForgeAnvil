@@ -124,11 +124,17 @@ export function makeBuck(mesh, opts) {
         for (const [q, v] of set) (H[q] = v), (known[q] = 1);
         left = next;
       }
-      for (let it = 0; it < 200; it++)
+      // Over-relaxed, so a wide opening settles without ridges.
+      for (let it = 0; it < 600; it++) {
+        let most = 0;
         for (const q of hole) {
           const i = Math.floor(q / ny), j = q % ny;
-          H[q] = (H[(i + 1) * ny + j] + H[(i - 1) * ny + j] + H[i * ny + j + 1] + H[i * ny + j - 1]) / 4;
+          const dd = 1.9 * ((H[(i + 1) * ny + j] + H[(i - 1) * ny + j] + H[i * ny + j + 1] + H[i * ny + j - 1]) / 4 - H[q]);
+          H[q] += dd;
+          most = Math.max(most, Math.abs(dd));
         }
+        if (most < 1e-4) break;
+      }
     }
   }
   // Only the cabin counts: along the car between `cabin.from` and `cabin.to`,
