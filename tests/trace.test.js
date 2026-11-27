@@ -94,3 +94,17 @@ test('two openings joined through a narrow gap (a scan\'s panel gap) are split a
   const big = parts.filter((p) => p.length > 80);
   assert.equal(big.length, 2);
 });
+
+test('a windscreen runs across the notch where the rear-view mirror is fixed', () => {
+  // 60 × 30, facing up, with a 12 mm wide, 6 mm deep notch in the middle of its top edge.
+  const loop = [];
+  const line = (a, b) => {
+    const n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.25);
+    for (let i = 0; i < n; i++) loop.push([a[0] + ((b[0] - a[0]) * i) / n, a[1] + ((b[1] - a[1]) * i) / n, 0]);
+  };
+  line([0, 0], [60, 0]); line([60, 0], [60, 30]); line([60, 30], [36, 30]); line([36, 30], [33, 24]);
+  line([33, 24], [27, 24]); line([27, 24], [24, 30]); line([24, 30], [0, 30]); line([0, 30], [0, 0]);
+  const s = simplify(loop, [0, 0, 1], 0.3);
+  assert.ok(s.points.every((p) => !(p[0] > 25 && p[0] < 35 && p[1] < 29)), `no point down in the notch: ${JSON.stringify(s.points)}`);
+  assert.ok(s.doubt.some((p) => Math.abs(p[0] - 30) < 4 && p[1] > 28), 'the bridged notch is pointed out');
+});

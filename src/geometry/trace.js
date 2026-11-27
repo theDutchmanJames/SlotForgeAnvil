@@ -445,9 +445,16 @@ export function simplify(loop, normal, tol = 0.15) {
   // edge runs out and straight back, a stray face at the rim).
   // Smoothed a little (over about a millimetre, back and forth so it does
   // not shrink), so a scan's grain makes no corners or extra points.
-  const dense = smoothLoop(despur(resample(loop, 0.5)), 4);
+  let dense = smoothLoop(despur(resample(loop, 0.5)), 4);
+  if (dense.length < 12) return null;
+  // Notches: where the edge dips into the window over a short stretch and
+  // comes back (the base a rear-view mirror is fixed to, a wiper boss), the
+  // glass runs across it: the outline bridges the notch's mouth.
+  // A windscreen or rear window (facing up) may have a wide one (a modern
+  // car's mirror and sensor housing); side windows only small ones.
+  const bridged = bridgeNotches(dense, u, v, n[2] > 0.6);
+  dense = bridged.pts;
   const m = dense.length;
-  if (m < 12) return null;
   const flat = dense.map((p) => [dot(p, u), dot(p, v)]);
   let area = 0;
   for (let i = 0; i < m; i++) area += flat[i][0] * flat[(i + 1) % m][1] - flat[(i + 1) % m][0] * flat[i][1];
@@ -553,13 +560,79 @@ export function simplify(loop, normal, tol = 0.15) {
   const points = picks.map((i) => dense[i].map((x) => Math.round(x * 1000) / 1000));
   const corners = picks.map((i) => isCorner[i]);
   // Dents: the outline turning inward, sharply and over a short stretch.
-  const doubt = [];
+  // Bridged notches are pointed out too, to check the glass should run across.
+  const doubt = bridged.at.map((p) => p.map((x) => Math.round(x * 1000) / 1000));
   for (let i = 0; i < m; i++)
     if (turn[i] < (-20 * Math.PI) / 180 && turn[i] <= turn[(i + 1) % m] && turn[i] <= turn[(i - 1 + m) % m]) {
       const p = dense[i];
       if (!doubt.some((q) => Math.hypot(...sub(p, q)) < 3)) doubt.push(p.map((x) => Math.round(x * 1000) / 1000));
     }
   return { points, corners, doubt };
+}
+
+// Short notches into a closed outline, bridged: the stretch between two
+// points close together (the mouth) that runs well into the outline and
+// back is replaced by a straight line across. A notch: its mouth at most a
+// quarter of the outline's size and 15 mm (wide: 45% and 30 mm), the way
+// round at least twice the mouth (wide: 1.25 times, and in by an eighth of it), reaching at least 0.8 mm in. Returns the points and the middles of
+// the mouths bridged.
+function bridgeNotches(pts, u, v, wide = false) {
+  const flat = (p) => [dot(p, u), dot(p, v)];
+  let p = pts;
+  const at = [];
+  for (let round = 0; round < 6; round++) {
+    const m = p.length;
+    const F = p.map(flat);
+    let area = 0, lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    for (let i = 0; i < m; i++) {
+      area += F[i][0] * F[(i + 1) % m][1] - F[(i + 1) % m][0] * F[i][1];
+      lo = [Math.min(lo[0], F[i][0]), Math.min(lo[1], F[i][1])];
+      hi = [Math.max(hi[0], F[i][0]), Math.max(hi[1], F[i][1])];
+    }
+    const sg = area >= 0 ? 1 : -1;
+    const size = Math.max(hi[0] - lo[0], hi[1] - lo[1]);
+    const maxMouth = wide ? Math.min(30, size * 0.45) : Math.min(15, size / 4);
+    const maxSpan = Math.round((size * 0.6) / 0.5);
+    let best = null;
+    for (let i = 0; i < m; i++) {
+      let arc = 0;
+      for (let k = 1; k < Math.min(maxSpan, m / 3); k++) {
+        const j = (i + k) % m;
+        arc += Math.hypot(F[j][0] - F[(j - 1 + m) % m][0], F[j][1] - F[(j - 1 + m) % m][1]);
+        const mx = F[j][0] - F[i][0], my = F[j][1] - F[i][1];
+        const mouth = Math.hypot(mx, my);
+        if (mouth > maxMouth || mouth < 0.5 || arc < mouth * (wide ? 1.25 : 2)) continue;
+        // How far in the stretch goes (inside the outline is to the left of
+        // the way it runs when it turns anticlockwise).
+        let deep = 0, out = 0;
+        for (let q = 1; q < k; q++) {
+          const g = F[(i + q) % m];
+          const side = (sg * (mx * (g[1] - F[i][1]) - my * (g[0] - F[i][0]))) / mouth;
+          // side > 0: to the left of the mouth, inside the outline.
+          if (side > deep) deep = side;
+          if (side < -0.3) out++;
+        }
+        if (deep < (wide ? Math.max(0.8, mouth * 0.12) : 0.8) || out > k * 0.1) continue;
+        const score = arc - mouth;
+        if (!best || score > best.score) best = { i, k, score };
+      }
+    }
+    if (!best) break;
+    const { i, k } = best;
+    const a = p[i], b = p[(i + k) % m];
+    const n = Math.max(1, Math.round(Math.hypot(...sub(b, a)) / 0.5));
+    const across = [];
+    for (let q = 1; q < n; q++) across.push(a.map((x, c) => x + ((b[c] - x) * q) / n));
+    at.push(a.map((x, c) => (x + b[c]) / 2));
+    const next = [];
+    for (let q = 0; q < m; q++) {
+      const d = (q - i + m) % m;
+      if (d === 0) next.push(p[q], ...across);
+      else if (d >= k) next.push(p[q]);
+    }
+    p = next;
+  }
+  return { pts: p, at };
 }
 
 function smoothLoop(pts, rounds) {
