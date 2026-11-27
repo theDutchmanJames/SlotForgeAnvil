@@ -54,6 +54,7 @@ import { GLASS_DEFAULTS, glassOf, pillarWarnings, windowOutlines, windowState } 
 import { sampleClosedCurve } from './geometry/curve.js';
 import { BUCK_DEFAULTS } from './geometry/buck.js';
 import { LENS_DEFAULTS } from './geometry/lenses.js';
+import { joinMeshes } from './geometry/topology.js';
 import {
   DEFAULT_PRINT,
   MATERIALS,
@@ -2792,7 +2793,7 @@ function buckSettings() {
     // back, measured on the buck (which sits wall + sheet + allowance further in).
     const b = result.stats.bounds;
     const mid = b.min[0] + b.size[0] / 2;
-    const pts = windowOutlines(allWindows(), 1).flatMap((o) => o.points);
+    const pts = windowOutlines(cabinWindows(), 1).flatMap((o) => o.points);
     const low = (front) => {
       const zs = pts.filter((p) => (p[0] < mid) === front).map((p) => p[2]);
       return zs.length ? Math.min(...zs) - s.margin - (s.wall + s.sheet + s.allowance) - 0.5 : b.min[2] + b.size[2] * 0.55;
@@ -2803,12 +2804,16 @@ function buckSettings() {
   if (!Number.isFinite(s.cabinFrom) || !Number.isFinite(s.cabinTo)) {
     // Default cabin: the windows, plus room for the glue margin; else the middle of the car.
     const b = result.stats.bounds;
-    const xs = windowOutlines(allWindows(), 1).flatMap((o) => o.points.map((p) => p[0]));
+    const xs = windowOutlines(cabinWindows(), 1).flatMap((o) => o.points.map((p) => p[0]));
     const nose = b.min[0];
     s.cabinFrom ??= round((xs.length ? Math.min(...xs) - s.margin - 2 : nose + b.size[0] * 0.25) - nose, 1);
     s.cabinTo ??= round((xs.length ? Math.max(...xs) + s.margin + 2 : nose + b.size[0] * 0.8) - nose, 1);
   }
   return s;
+}
+// The windows the one-piece insert is for: not the lights, nor glass on the outside.
+function cabinWindows() {
+  return allWindows().filter((w) => !w.lens && !(windowState(w) === 'open' && glassOf(w) !== 'inside'));
 }
 function setBuckSetting(key, value) {
   commit(() => (project.buck = { ...buckSettings(), [key]: value }), false);
@@ -2827,6 +2832,7 @@ async function makeBuckNow() {
     const opts = { wall: s.wall, sheet: s.sheet, allowance: s.allowance, margin: s.margin, skirt: s.skirt, plinth: s.plinth, draft: s.draft, guide: s.guide };
     opts.trim = { front: s.trimFront, rear: s.trimRear };
     opts.cabin = { from: nose + s.cabinFrom, to: nose + s.cabinTo };
+    Object.assign(opts, { mode: s.mode, marks: s.marks, raise: s.raise, grooveWidth: s.grooveWidth, grooveDepth: s.grooveDepth, clearance: lensSettings().clearance });
     const out = await call('buck', { opts });
     buck.result = out;
     buck.key = buckKey();
@@ -2843,7 +2849,11 @@ let buckMarks = false,
 // other: something to show in the buck's place (the light lenses).
 function drawBuck(show, other = null) {
   const r = (show && buck.result) || other || null;
-  if (r !== buckShown) viewport.setBuck(r ? { positions: r.positions, indices: r.indices } : null);
+  if (r !== buckShown) {
+    // The cabin insert and the window bucks together.
+    const list = r ? [{ positions: r.positions, indices: r.indices }, ...(r.windows ? [r.windows.car] : [])].filter((m) => m.indices.length) : [];
+    viewport.setBuck(list.length ? joinMeshes(list) : null);
+  }
   buckShown = r;
   if (show && result) {
     viewport.clearOverlay();
@@ -2854,7 +2864,7 @@ function drawBuck(show, other = null) {
     const zAt = (x) => s.trimFront + ((s.trimRear - s.trimFront) * (x - b.min[0])) / b.size[0];
     for (const x of [b.min[0] + s.cabinFrom, b.min[0] + s.cabinTo])
       viewport.segment({ x, y: b.min[1], z: zAt(x) }, { x, y: b.max[1], z: zAt(x) }, 0x3ddc84);
-    if (r) {
+    if (r?.info) {
       for (const p of r.info.changed) viewport.marker({ x: p[0], y: p[1], z: p[2] }, 0xe5484d);
       for (const p of r.info.short) viewport.marker({ x: p[0], y: p[1], z: p[2] }, 0xf2b705);
     }
@@ -2872,20 +2882,32 @@ function panelBuck() {
     stale = r && buck.key !== buckKey();
   const f = (k, label, digits = 2) => `<span class="fx">${label}${numField(`bk-${k}`, round(toUnits(s[k], u), digits), u)}</span>`;
   const wins = allWindows();
-  return `${head('Glazing buck', 'One plug for the whole cabin: vac-form clear sheet over it and glue the insert in from the inside. Made from the body before its windows are cut.')}
-    ${wins.length ? '' : '<div class="muted" style="font-size:12px">Draw the windows first (Windows menu): their outlines become raised guide lines on the buck, and the trim line follows them.</div>'}
-    <div class="f">Trim line (green on the car)<div class="g2">${f('trimFront', 'Height at the front')}${f('trimRear', 'Height at the back')}</div>
+  const each = s.mode === 'each';
+  const own = wins.filter((w) => windowState(w) === 'open' && (glassOf(w) !== 'inside' || (each && !w.lens)));
+  const gname = (w) => GLASS_NAMES.find((g) => g[0] === glassOf(w))[1].toLowerCase();
+  const cabinFields = each
+    ? ''
+    : `<div class="f">Windows on the buck<span class="seg">${[['line', 'Line', 'A fine raised line along each outline'], ['raised', 'Raised', 'Each window stands proud, with a sharp edge: the formed sheet has a step to trim along'], ['groove', 'Groove', 'A V-groove along each outline, for the knife']].map(([k, n, t]) => `<button data-act="buck-marks" data-v="${k}" class="${s.marks === k ? 'on' : ''}" title="${t}">${n}</button>`).join('')}</span>
+      ${s.marks === 'raised' ? `<div class="g2">${f('raise', 'Raised by')}</div><span class="muted" style="font-weight:400;font-size:12px">Up to the body wall: the more, the further the glass reaches into the opening, towards flush.</span>` : ''}
+      ${s.marks === 'groove' ? `<div class="g2">${f('grooveWidth', 'Groove width')}${f('grooveDepth', 'Groove depth')}</div>` : ''}</div>`;
+  return `${head('Glazing buck', 'Plugs to vac-form clear sheet over. One insert: a single plug for the whole cabin, the formed sheet glued in from the inside. A buck per window: each window its own plug, shaped for where its glass sits (set under Windows). Made from the body before its windows are cut.')}
+    ${wins.length ? '' : '<div class="muted" style="font-size:12px">Draw the windows first (Windows menu): their outlines go on the buck, and the trim line follows them.</div>'}
+    <div class="f">Make<span class="seg">${[['cabin', 'One insert', 'One plug for the whole cabin, glued in from inside'], ['each', 'A buck per window', 'Each window its own plug and pane']].map(([k, n, t]) => `<button data-act="buck-mode" data-v="${k}" class="${(s.mode ?? 'cabin') === k ? 'on' : ''}" title="${t}">${n}</button>`).join('')}</span>
+      ${own.length ? `<span class="muted" style="font-weight:400;font-size:12px">Own bucks: ${own.map((w) => `${esc(w.name)}${w.mirror ? ' (both sides)' : ''} (glass ${gname(w)})`).join(', ')}.${each ? '' : ' Glass on the outside cannot go in the one insert.'}</span>` : ''}</div>
+    ${cabinFields}
+    ${each ? '' : `<div class="f">Trim line (green on the car)<div class="g2">${f('trimFront', 'Height at the front')}${f('trimRear', 'Height at the back')}</div>
       <span class="muted" style="font-weight:400;font-size:12px">The formed sheet is cut off here. It should run at least the glue margin below every window.</span></div>
     <div class="f">Cabin, measured from the nose<div class="g2">${f('cabinFrom', 'From', 1)}${f('cabinTo', 'To', 1)}</div>
-      <span class="muted" style="font-weight:400;font-size:12px">Keeps the bonnet and boot off the buck when they stand above the trim line.</span></div>
+      <span class="muted" style="font-weight:400;font-size:12px">Keeps the bonnet and boot off the buck when they stand above the trim line.</span></div>`}
     <div class="g2">${f('margin', 'Glue margin', 1)}${f('wall', 'Body wall')}${f('sheet', 'Sheet thickness')}${f('allowance', 'Fit allowance')}${f('skirt', 'Skirt below the trim', 1)}${f('plinth', 'Plinth', 1)}
       <span class="fx">Draft${numField('bk-draft', s.draft, '°')}</span>${f('guide', 'Guide line height')}</div>
     <div class="row"><button class="btn primary sm" data-act="buck-make"${buck.busy ? ' disabled' : ''}>${icon('buck')}${buck.busy ? 'Making the buck…' : r ? 'Make it again' : 'Make the buck'}</button>
-      ${r && !stale ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export buck STL</button>` : ''}</div>
+      ${r && !stale && r.info ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export insert buck</button>` : ''}${r && !stale && r.windows?.print.indices.length ? `<button class="btn sm" data-act="buck-export" data-v="each">${icon('export')}Export window bucks</button>` : ''}</div>
     ${buck.error ? `<div class="note bad">${esc(buck.error)}</div>` : ''}
     ${stale ? '<div class="note warn">The body or the settings changed since this buck was made. Make it again before exporting.</div>' : ''}
+    ${r?.windows ? `<div class="note">Window bucks: ${r.windows.info.windows.map((w) => esc(w.name)).join(', ')}. Each stands on its plinth; trim the formed pane along the raised line.</div>${r.windows.info.warnings.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}` : ''}
     ${
-      r
+      r?.info
         ? `<div class="note">${fmtLen(r.info.size[0], u, 1)} × ${fmtLen(r.info.size[1], u, 1)} × ${fmtLen(r.info.size[2], u, 1)} · ${r.info.triangles.toLocaleString()} triangles · ${r.info.guides} guide line${r.info.guides === 1 ? '' : 's'}<br>
             <span class="muted">Surface ${fmtLen(r.info.offset, u)} inside the body (wall + sheet + allowance).</span></div>
           ${r.info.changedCount ? `<div class="note warn">The sheet could not come off as the body is shaped in ${r.info.changed.length} place${r.info.changed.length === 1 ? '' : 's'} (red on the car): the buck is filled there, by up to ${fmtLen(r.info.changedMost, u)}. Expect a small gap between the insert and the wall there; usually the shoulder below the windows or a lip round the glass.</div>` : '<div class="note">The sheet comes off everywhere without changing the shape.</div>'}
@@ -3184,8 +3206,8 @@ function panelFinal() {
     const bk = buck.result;
     if (!bk) row('warn', 'Glazing buck', 'Not made yet.', 'buck', 'Make it');
     else if (buck.key !== buckKey()) row('warn', 'Glazing buck', 'Made before the last change: make it again.', 'buck', 'Make it');
-    else if (bk.info.warnings.length) row('warn', 'Glazing buck', bk.info.warnings.join('; '), 'buck', 'Look');
-    else row('ok', 'Glazing buck', `Ready, glue margin ${fmtLen(buckSettings().margin, u, 1)} everywhere.`);
+    else if ([...(bk.info?.warnings ?? []), ...(bk.windows?.info.warnings ?? [])].length) row('warn', 'Glazing buck', [...(bk.info?.warnings ?? []), ...(bk.windows?.info.warnings ?? [])].join('; '), 'buck', 'Look');
+    else row('ok', 'Glazing buck', bk.info ? `Ready, glue margin ${fmtLen(buckSettings().margin, u, 1)} everywhere.` : 'Ready: a buck per window.');
     if (lensLights().length) {
       const lr = lensJob.result;
       if (!lr) row('warn', 'Clear parts', 'Not made yet.', 'lenses', 'Make them');
@@ -4394,11 +4416,22 @@ const actions = {
     download(fileName('stl').replace(/\.stl$/, ` ${what}.stl`), encodeSTL(m, `SlotForge Anvil · ${what} · ${project.name}`), 'model/stl');
     toast(kind === 'buck' ? 'Lens bucks exported. Print them solid and smooth them before forming.' : 'Clear parts exported, outside up. Print them in clear resin or clear filament.');
   },
-  'buck-export'() {
+  'buck-export'(v) {
     const r = buck.result;
     if (!r) return;
+    if (v === 'each' && r.windows) {
+      download(fileName('stl').replace(/\.stl$/, ' window bucks.stl'), encodeSTL(r.windows.print, `SlotForge Anvil · window bucks · ${project.name}`), 'model/stl');
+      return toast('Window bucks exported. Print them solid and smooth them before forming.');
+    }
+    if (!r.info) return;
     download(fileName('stl').replace(/\.stl$/, ' buck.stl'), encodeSTL({ positions: r.positions, indices: r.indices }, `SlotForge Anvil · buck · ${project.name}`), 'model/stl');
     toast('Buck exported. Print it solid and smooth it before forming.');
+  },
+  'buck-mode'(v) {
+    setBuckSetting('mode', v);
+  },
+  'buck-marks'(v) {
+    setBuckSetting('marks', v);
   },
   'post-fixed'(v) {
     postOptions().fixed = v === '1';

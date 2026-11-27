@@ -269,15 +269,19 @@ function printedLens(f, o, depth = 0) {
 }
 
 // The lens buck, in the light's frame (standing on its plinth).
-function lensBuck(f, o) {
+// spec (a window's own buck, see windowBuck): r, how far in the buck's
+// surface is; grow, how far past the outline it reaches; trim, the line
+// the formed sheet is cut along; glue, whether a glue margin line goes on.
+function lensBuck(f, o, spec = null) {
   const { c, outside } = f;
-  const r = o.wall + o.sheet + o.allowance;
+  const r = spec ? spec.r : o.wall + o.sheet + o.allowance;
+  const grow = spec ? spec.grow : o.margin;
   const cell = o.cell ?? Math.min(0.12, Math.max(0.05, c.size / 100));
   const k = o.draft > 0 ? 1 / Math.tan((o.draft * Math.PI) / 180) : Infinity;
   const spread = Number.isFinite(k) ? (o.skirt + o.plinth) / k + 1 : 1;
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const [x, y] of c.poly) (minX = Math.min(minX, x)), (maxX = Math.max(maxX, x)), (minY = Math.min(minY, y)), (maxY = Math.max(maxY, y));
-  const pad = o.margin + r + spread + 2 * cell;
+  const pad = grow + r + spread + 2 * cell;
   const x0 = minX - pad, y0 = minY - pad;
   const nx = Math.ceil((maxX - minX + 2 * pad) / cell) + 1, ny = Math.ceil((maxY - minY + 2 * pad) / cell) + 1;
   const X = (i) => x0 + i * cell, Y = (j) => y0 + j * cell;
@@ -291,7 +295,7 @@ function lensBuck(f, o) {
   // The lens: the opening and its glue margin.
   const inLens = new Uint8Array(nx * ny);
   const dist = distance2d(c.poly);
-  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) inLens[i * ny + j] = dist(X(i), Y(j)) > -o.margin ? 1 : 0;
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) inLens[i * ny + j] = dist(X(i), Y(j)) > -grow ? 1 : 0;
   // Moved in by r: the deepest a ball of radius r sits under the surface.
   const R = Math.ceil(r / cell);
   const disk = [];
@@ -382,12 +386,53 @@ function lensBuck(f, o) {
     const g = (p, q) => F[(a + p) * ny + b + q];
     return g(0, 0) * (1 - u) * (1 - v) + g(1, 0) * u * (1 - v) + g(0, 1) * (1 - u) * v + g(1, 1) * u * v;
   };
-  if (o.guide > 0) {
+  if (o.guide > 0 && spec) {
+    pieces.push(tube(spec.trim.map(([x, y]) => [x, y, Fat(x, y)]), o.guide));
+  } else if (o.guide > 0) {
     pieces.push(tube(c.poly.map(([x, y]) => [x, y, Fat(x, y)]), o.guide));
     // Just inside the margin's edge, where the surface is still the lens.
     pieces.push(tube(offsetOutline(c.poly, o.margin - cell * 1.5).map(([x, y]) => [x, y, Fat(x, y)]), o.guide));
   }
   return { mesh: joinMeshes(pieces.map((p) => ({ positions: Float32Array.from(p.positions), indices: Uint32Array.from(p.indices) }))), cell, missed: missed / cells };
+}
+
+// A window's own buck, for where its glass sits. Inside: the lens buck (the
+// sheet glued in from inside, with a glue margin). Outside: the formed
+// sheet's inside is the body's outside (on top), or that moved in by the
+// set-back and the sheet (flush, set in: a vac-formed set-in pane is a
+// flush pane); the buck reaches `runoff` past the outline so the sheet
+// forms right up to the trim line, which is the outline (on top) or the
+// outline the fit clearance smaller (in the rebate).
+function windowBuck(f, o, g) {
+  if (g.kind === 'inside') return lensBuck(f, o);
+  const top = g.kind === 'top';
+  const r = top ? 0 : g.depth + o.sheet;
+  const trim = top ? f.c.poly : offsetOutline(f.c.poly, -o.clearance);
+  return lensBuck(f, o, { r, grow: o.runoff, trim });
+}
+
+// A buck per window: outlines as for makeLenses (with glass); opts as for
+// makeLenses plus runoff. Returns the bucks on the car and laid out.
+export function makeWindowBucks(mesh, outlines, opts) {
+  const o = { ...LENS_DEFAULTS, runoff: 2, ...opts };
+  if (!(o.wall > 0)) throw Error('Enter the wall thickness of the body.');
+  const cast = rayCaster(mesh.positions, mesh.indices);
+  const print = [], car = [], windows = [], warnings = [];
+  for (const ol of outlines) {
+    const g = { kind: 'inside', thick: 1, depth: 0, overlap: 0, ...ol.glass };
+    const f = lightFrame(ol, cast, o.margin + o.runoff + o.wall + o.sheet + o.allowance + 2 + g.depth);
+    const b = windowBuck(f, o, g);
+    if (b.error) {
+      warnings.push(`${ol.name}: ${b.error}, so it has no buck`);
+      continue;
+    }
+    if (b.missed > 0.02) warnings.push(`${ol.name}: ${Math.round(b.missed * 100)}% of the buck's edge is off the body; the buck is filled there`);
+    print.push(b.mesh);
+    car.push(onCar(f, b.mesh));
+    windows.push({ name: ol.name, kind: g.kind });
+  }
+  const join = (l) => (l.length ? joinMeshes(l) : EMPTY());
+  return { car: join(car), print: layOut(print, o.gap) ?? EMPTY(), info: { windows, warnings } };
 }
 
 // A mesh in a light's frame, put on the car.

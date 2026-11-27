@@ -11,6 +11,7 @@
 import { bounds } from './bounds.js';
 import { rayCaster } from './rays.js';
 import { applyReduce } from './reduce.js';
+import { cutter } from './windows.js';
 
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -21,7 +22,11 @@ const norm = (a) => {
 
 const AROUND = [[0, 0], ...Array.from({ length: 8 }, (_, k) => [Math.cos((k * Math.PI) / 4), Math.sin((k * Math.PI) / 4)])];
 
-export const BUCK_DEFAULTS = { sheet: 0.5, allowance: 0.1, margin: 3, skirt: 3, plinth: 2, draft: 1, guide: 0.15 };
+// marks: how the windows show on the buck: 'line' (a raised guide line),
+// 'raised' (each window's area stands proud by `raise`, with a sharp
+// edge, so the formed sheet has a step to trim along), 'groove' (a V-groove
+// `grooveWidth` wide and `grooveDepth` deep along each outline, for the knife).
+export const BUCK_DEFAULTS = { sheet: 0.5, allowance: 0.1, margin: 3, skirt: 3, plinth: 2, draft: 1, guide: 0.15, marks: 'line', raise: 0.5, grooveWidth: 0.6, grooveDepth: 0.3 };
 
 // opts: { wall, sheet, allowance, trim: { front, rear }, skirt, plinth, draft,
 //         margin, guide, outlines: [{ name, points, normal }], posts: [{ x, y }], cell }
@@ -66,12 +71,77 @@ export function makeBuck(mesh, opts) {
   const I0 = Math.max(0, lo[0] - pad), I1 = Math.min(nx - 1, hi[0] + pad);
   const J0 = Math.max(0, lo[1] - pad), J1 = Math.min(ny - 1, hi[1] + pad);
   for (let i = I0; i <= I1; i++) for (let j = J0; j <= J1; j++) if (i % step || j % step) H[i * ny + j] = shoot(i, j);
+  // Openings the body has, seen from above (window openings the model came
+  // with, a vent): the rays fall through. Where such a hole is closed in by
+  // the body all round it gets a smooth skin across, as glass would be, so
+  // the buck does not drop into it. Misses that reach the grid's edge are
+  // the open air round the car and stay.
+  let filledHoles = 0;
+  {
+    const air = new Uint8Array(nx * ny);
+    const queue = [];
+    for (let i = I0; i <= I1; i++)
+      for (let j = J0; j <= J1; j++)
+        if (H[i * ny + j] === -Infinity && (i === I0 || i === I1 || j === J0 || j === J1)) {
+          air[i * ny + j] = 1;
+          queue.push(i * ny + j);
+        }
+    while (queue.length) {
+      const k2 = queue.pop();
+      const i = Math.floor(k2 / ny), j = k2 % ny;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const a2 = i + di, c2 = j + dj;
+        if (a2 < I0 || a2 > I1 || c2 < J0 || c2 > J1) continue;
+        const q = a2 * ny + c2;
+        if (H[q] === -Infinity && !air[q]) {
+          air[q] = 1;
+          queue.push(q);
+        }
+      }
+    }
+    const hole = [];
+    for (let i = I0; i <= I1; i++) for (let j = J0; j <= J1; j++) if (H[i * ny + j] === -Infinity && !air[i * ny + j]) hole.push(i * ny + j);
+    filledHoles = hole.length;
+    if (hole.length) {
+      // Start from the mean of each hole spot's known neighbours, growing in
+      // from the rim, then smooth it (a soap film across the opening).
+      const known = new Uint8Array(nx * ny);
+      for (let q = 0; q < nx * ny; q++) known[q] = H[q] > -Infinity ? 1 : 0;
+      let left = hole.slice();
+      while (left.length) {
+        const next = [], set = [];
+        for (const q of left) {
+          const i = Math.floor(q / ny), j = q % ny;
+          let sum = 0, n = 0;
+          for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const p = (i + di) * ny + j + dj;
+            if (known[p]) (sum += H[p]), n++;
+          }
+          if (n) set.push([q, sum / n]);
+          else next.push(q);
+        }
+        if (!set.length) break;
+        for (const [q, v] of set) (H[q] = v), (known[q] = 1);
+        left = next;
+      }
+      for (let it = 0; it < 200; it++)
+        for (const q of hole) {
+          const i = Math.floor(q / ny), j = q % ny;
+          H[q] = (H[(i + 1) * ny + j] + H[(i - 1) * ny + j] + H[i * ny + j + 1] + H[i * ny + j - 1]) / 4;
+        }
+    }
+  }
   // Only the cabin counts: along the car between `cabin.from` and `cabin.to`,
   // and only where the body is on both sides of the spot at the trim line,
   // so not under a door mirror. (Along the car a ray can leave through a
   // wheel arch, so only the sides are asked.)
   const from = o.cabin?.from ?? -Infinity, to = o.cabin?.to ?? Infinity;
   const DIRS = [[0, 1, 0], [0, -1, 0]];
+  // A side ray can also leave through an opening in the body at the trim
+  // line's height (a side intake, a vent). Such spots are closed in by cabin
+  // all round, while a spot under a door mirror reaches the open air beside
+  // the car: only those stay out (see below).
+  const sideOut = new Uint8Array(nx * ny);
   for (let i = I0; i <= I1; i++) {
     const x = X(i);
     const t = trimAt(x);
@@ -80,26 +150,118 @@ export function makeBuck(mesh, opts) {
       // Below the trim line nothing is cut off, and the true surface there
       // keeps the inward offset right where the cabin rises out of it.
       if (H[k2] < t) continue;
-      if (x < from || x > to || DIRS.some((d) => cast([x, Y(j), t], d) === Infinity)) H[k2] = -Infinity;
+      if (x < from || x > to) H[k2] = -Infinity;
+      else if (DIRS.some((d) => cast([x, Y(j), t], d) === Infinity)) sideOut[k2] = 1;
+    }
+  }
+  {
+    // Spread from the open air (below the trim line, off the body, past the
+    // cabin's ends, the grid's edge) through the spots a side ray left by.
+    const seen = new Uint8Array(nx * ny);
+    const queue = [];
+    const open = (i, j) => i < I0 || i > I1 || j < J0 || j > J1 || H[i * ny + j] < trimAt(X(i));
+    for (let i = I0; i <= I1; i++)
+      for (let j = J0; j <= J1; j++) {
+        const k2 = i * ny + j;
+        if (!sideOut[k2]) continue;
+        if ([[1, 0], [-1, 0], [0, 1], [0, -1]].some(([di, dj]) => open(i + di, j + dj))) {
+          seen[k2] = 1;
+          queue.push(k2);
+        }
+      }
+    while (queue.length) {
+      const k2 = queue.pop();
+      const i = Math.floor(k2 / ny), j = k2 % ny;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const a = i + di, c = j + dj;
+        if (a < I0 || a > I1 || c < J0 || c > J1) continue;
+        const q = a * ny + c;
+        if (sideOut[q] && !seen[q]) {
+          seen[q] = 1;
+          queue.push(q);
+        }
+      }
+    }
+    for (let q = 0; q < nx * ny; q++) if (seen[q]) H[q] = -Infinity;
+  }
+
+  // ---- window marks: each spot of the surface its own offset. Raised: the
+  // window's area moves in less, so it stands proud. Its edge comes out set
+  // back from the outline by about sqrt(r² - (r - raise)²), and the formed
+  // sheet over the step is a sheet's thickness wider: the area is grown by
+  // the one and shrunk by the other, so the formed window fits the outline.
+  // Groove: along the outline the surface moves in further, most on it.
+  const Rs = new Float32Array(nx * ny).fill(r);
+  const marks = o.marks === 'raised' || o.marks === 'groove' ? o.marks : 'line';
+  if (marks !== 'line') {
+    if (marks === 'raised' && !(o.raise > 0 && o.raise < r)) throw Error(`Raise the windows by more than 0 and less than ${r.toFixed(2)} mm (wall + sheet + allowance).`);
+    if (marks === 'groove' && !(o.grooveWidth > 0 && o.grooveDepth > 0)) throw Error('Enter the groove width and depth.');
+    const grow = marks === 'raised' ? Math.sqrt(r * r - (r - o.raise) ** 2) - o.sheet - o.allowance : 0;
+    for (const w of o.outlines ?? []) {
+      if (!(w.points?.length >= 3)) continue;
+      const c = cutter(w.points, w.normal, 1);
+      const poly = c.poly;
+      const exact = (x, y) => {
+        let best = Infinity;
+        for (let a = 0, b2 = poly.length - 1; a < poly.length; b2 = a++) {
+          const [xi, yi] = poly[a], [xj, yj] = poly[b2];
+          const ex = xi - xj, ey = yi - yj;
+          const t = Math.max(0, Math.min(1, ((x - xj) * ex + (y - yj) * ey) / (ex * ex + ey * ey || 1)));
+          best = Math.min(best, Math.hypot(x - xj - t * ex, y - yj - t * ey));
+        }
+        return best;
+      };
+      const reachOut = marks === 'raised' ? Math.max(0, grow) + cell : o.grooveWidth / 2 + cell;
+      for (let i = I0; i <= I1; i++)
+        for (let j = J0; j <= J1; j++) {
+          const q = i * ny + j;
+          if (!(H[q] > -Infinity)) continue;
+          const p = [X(i), Y(j), H[q]];
+          const u = p[0] * c.u[0] + p[1] * c.u[1] + p[2] * c.u[2], v = p[0] * c.v[0] + p[1] * c.v[1] + p[2] * c.v[2];
+          // Only the surface the window lies on, not the far side of the car.
+          const s = p[0] * c.d[0] + p[1] * c.d[1] + p[2] * c.d[2] - c.at(u, v);
+          if (s < c.lo - 1 || s > 2) continue;
+          const k = c.inside2d(u, v);
+          if (k < -reachOut - 1) continue;
+          if (marks === 'raised') {
+            const sd = k > 0 ? (k >= c.inside2d.cell ? k : exact(u, v)) : -exact(u, v);
+            if (sd > -grow) Rs[q] = Math.min(Rs[q], r - o.raise);
+          } else {
+            const e = Math.abs(k) < (c.inside2d.cell ?? 0.3) ? exact(u, v) : Infinity;
+            if (e < o.grooveWidth / 2) Rs[q] = Math.max(Rs[q], r + o.grooveDepth * (1 - (2 * e) / o.grooveWidth));
+          }
+        }
     }
   }
 
   // ---- move inward by r: the deepest the ball can sit under the surface
-  const R = Math.ceil(r / cell);
+  let rMax = r;
+  for (let q = 0; q < nx * ny; q++) if (Rs[q] > rMax) rMax = Rs[q];
+  const R = Math.ceil(rMax / cell);
   const disk = [];
   for (let di = -R; di <= R; di++)
     for (let dj = -R; dj <= R; dj++) {
       const d2 = (di * di + dj * dj) * cell * cell;
-      if (d2 <= r * r) disk.push([di, dj, Math.sqrt(r * r - d2)]);
+      if (d2 <= rMax * rMax) disk.push([di, dj, d2]);
     }
+  disk.sort((p, q) => p[2] - q[2]);
   const B = new Float32Array(nx * ny).fill(-Infinity);
   for (let i = I0; i <= I1; i++)
     for (let j = J0; j <= J1; j++) {
       if (H[i * ny + j] < lowTrim - r) continue;
       let m = Infinity;
-      for (const [di, dj, h] of disk) {
+      for (const [di, dj, d2] of disk) {
         const a = i + di, c = j + dj;
-        const v = a < 0 || c < 0 || a >= nx || c >= ny ? -Infinity : H[a * ny + c] - h;
+        if (a < 0 || c < 0 || a >= nx || c >= ny) {
+          if (d2 <= r * r) {
+            m = -Infinity;
+            break;
+          }
+          continue;
+        }
+        const q = a * ny + c, rs = Rs[q];
+        if (d2 > rs * rs) continue;
+        const v = H[q] - Math.sqrt(rs * rs - d2);
         if (v < m) {
           m = v;
           if (m === -Infinity) break;
@@ -219,7 +381,14 @@ export function makeBuck(mesh, opts) {
   const short = [];
   for (const w of o.outlines ?? []) {
     const d = norm(w.normal.map((x) => -x));
-    const on = [];
+    // The guide runs: a run stops where a point finds no buck under it (off
+    // the cabin, below the trim line) or jumps (over a steep side), so no
+    // straight piece of line bridges the gap through the air.
+    const runs = [[]];
+    let on = runs[0];
+    const breakRun = () => {
+      if (on.length) runs.push((on = []));
+    };
     let missed = 0;
     for (const p of w.points) {
       const g = (s) => {
@@ -238,6 +407,7 @@ export function makeBuck(mesh, opts) {
       }
       if (s1 == null || g(s0) <= 0) {
         missed++;
+        breakRun();
         continue;
       }
       for (let it = 0; it < 30; it++) {
@@ -246,6 +416,8 @@ export function makeBuck(mesh, opts) {
         else s1 = m;
       }
       const q = [p[0] + d[0] * s1, p[1] + d[1] * s1, p[2] + d[2] * s1];
+      const last = on.at(-1);
+      if (last && Math.hypot(q[0] - last[0], q[1] - last[1], q[2] - last[2]) > Math.max(1, 6 * cell)) breakRun();
       on.push(q);
       // Glue margin: the formed sheet ends at the trim line.
       let near = q[2] < trimAt(q[0]) ? 0 : Infinity;
@@ -253,7 +425,17 @@ export function makeBuck(mesh, opts) {
       if (near < o.margin && !short.some((x) => Math.hypot(x[0] - p[0], x[1] - p[1], x[2] - p[2]) < 2)) short.push(p.slice());
     }
     if (missed > w.points.length * 0.1) warnings.push(`${w.name}: the outline is below the trim line or off the cabin, so the buck cannot show it`);
-    else if (o.guide > 0 && on.length > 8) pieces.push(tube(on, o.guide));
+    else if (o.guide > 0) {
+      // One closed line when nothing broke it (the last run then joins the first).
+      const list = runs.filter((r2) => r2.length);
+      const first = list[0], end = list.at(-1);
+      const whole = list.length === 1 && missed === 0;
+      if (!whole && list.length > 1 && first && end && Math.hypot(...first[0].map((x, k) => x - end.at(-1)[k])) <= Math.max(1, 6 * cell)) {
+        list[0] = [...end, ...first];
+        list.pop();
+      }
+      for (const r2 of list) if (r2.length > 8) pieces.push(tube(r2, o.guide, 6, whole));
+    }
   }
   if (short.length) warnings.push(`The glue margin is shorter than ${o.margin} mm in ${short.length} place${short.length === 1 ? '' : 's'} (marked on the car)`);
 
@@ -309,9 +491,11 @@ export function makeBuck(mesh, opts) {
       size: ob.size,
       triangles: out.indices.length / 3,
       guides: pieces.length - 1,
+      marks,
       changed,
       changedCount: count,
       changedMost: most,
+      filledHoles,
       short,
       postHits,
       warnings,
@@ -328,9 +512,10 @@ function signedVolume(p, t) {
   return v;
 }
 
-// A thin closed tube along a closed line: a raised guide line once it sits
-// half in the buck's surface.
-export function tube(points, radius, sides = 6) {
+// A thin closed tube along a line (closed, or open with its ends capped): a
+// raised guide line once it sits half in the buck's surface.
+export function tube(points, radius, sides = 6, closed = true) {
+  if (!closed) return openTube(points, radius, sides);
   // Even spacing, so the rings do not bunch up.
   const pts = [];
   const spacing = Math.max(radius * 1.5, 0.2);
@@ -364,6 +549,51 @@ export function tube(points, radius, sides = 6) {
       const b0 = ((i + 1) % n) * sides + s, b1 = ((i + 1) % n) * sides + ((s + 1) % sides);
       idx.push(a0, b0, b1, a0, b1, a1);
     }
+  return { positions: pos, indices: idx };
+}
+
+function openTube(points, radius, sides) {
+  const pts = [points[0]];
+  const spacing = Math.max(radius * 1.5, 0.2);
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i], b = points[i + 1];
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    for (let s = spacing; s <= L; s += spacing) {
+      const t = s / L;
+      pts.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]);
+    }
+  }
+  if (Math.hypot(...pts.at(-1).map((x, k) => x - points.at(-1)[k])) > 1e-6) pts.push(points.at(-1));
+  const n = pts.length;
+  const pos = [], idx = [];
+  let prevN = null;
+  for (let i = 0; i < n; i++) {
+    const t = norm(pts[Math.min(n - 1, i + 1)].map((x, k) => x - pts[Math.max(0, i - 1)][k]));
+    let N = prevN ? norm(prevN.map((x, k) => x - t[k] * dot(prevN, t))) : norm(cross(t, Math.abs(t[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]));
+    if (!Number.isFinite(N[0]) || Math.hypot(...N) < 0.5) N = norm(cross(t, [0, 1, 0]));
+    prevN = N;
+    const Bv = cross(t, N);
+    for (let s = 0; s < sides; s++) {
+      const a = (2 * Math.PI * s) / sides;
+      pos.push(...[0, 1, 2].map((k) => pts[i][k] + radius * (Math.cos(a) * N[k] + Math.sin(a) * Bv[k])));
+    }
+  }
+  for (let i = 0; i + 1 < n; i++)
+    for (let s = 0; s < sides; s++) {
+      const a0 = i * sides + s, a1 = i * sides + ((s + 1) % sides);
+      const b0 = (i + 1) * sides + s, b1 = (i + 1) * sides + ((s + 1) % sides);
+      idx.push(a0, b0, b1, a0, b1, a1);
+    }
+  // The ends: a cap each, a fan to the line's end point.
+  pos.push(...pts[0]);
+  const c0 = pos.length / 3 - 1;
+  pos.push(...pts[n - 1]);
+  const c1 = pos.length / 3 - 1;
+  for (let s = 0; s < sides; s++) {
+    const s1 = (s + 1) % sides;
+    idx.push(c0, s1, s);
+    idx.push(c1, (n - 1) * sides + s, (n - 1) * sides + s1);
+  }
   return { positions: pos, indices: idx };
 }
 

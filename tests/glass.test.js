@@ -148,3 +148,69 @@ test('clear parts follow where the glass sits: their face and back on the body, 
   ({ b } = part('inside', { depth: 0.2 }));
   near(b.min[1], -19.8, 'inside face');
 });
+
+// The roof of the shell (z = 30) with a window drawn on it, facing up.
+const roofWindow = (extra = {}) => ({
+  id: 'r',
+  name: 'Roof window',
+  points: [[35, -10, 30], [65, -10, 30], [65, 10, 30], [35, 10, 30]],
+  corners: [true, true, true, true],
+  normal: [0, 0, 1],
+  mirror: false,
+  state: 'open',
+  ...extra,
+});
+const buckOpts = (outlines, extra = {}) => ({ wall: 1, sheet: 0.5, allowance: 0.1, trim: { front: 20, rear: 20 }, outlines, posts: [], ...extra });
+const heightOf = (mesh) => {
+  const cast = rayCaster(mesh.positions, mesh.indices);
+  return (x, y) => 100 - cast([x, y, 100], [0, 0, -1]);
+};
+
+test('the glazing buck spans an opening the model came with, instead of dropping into it', async () => {
+  const { makeBuck } = await import('../src/geometry/buck.js');
+  // A model with its roof window already open: rays from above fall through.
+  const opened = applyWindows(body, { windows: [roofWindow()], depth: 3, fine: true });
+  const r = makeBuck(opened, buckOpts([]));
+  const h = heightOf(r.mesh);
+  assert.ok(r.info.filledHoles > 0);
+  assert.ok(Math.abs(h(50, 0) - (30 - 1.6)) < 0.1, `across the opening: ${h(50, 0)}`);
+  assert.ok(Math.abs(h(20, 0) - (30 - 1.6)) < 0.05, `the roof: ${h(20, 0)}`);
+  assert.equal(meshStats(r.mesh).openEdges, 0);
+});
+
+test('window marks on the glazing buck: raised areas stand proud, a groove runs along the outline', async () => {
+  const { makeBuck } = await import('../src/geometry/buck.js');
+  const { windowOutlines } = await import('../src/geometry/windows.js');
+  const outlines = windowOutlines([roofWindow()]).map((o) => ({ name: o.window.name, points: o.points, normal: o.normal }));
+  const roof = 30 - 1.6;
+  const line = heightOf(makeBuck(body, buckOpts(outlines, { guide: 0 })).mesh);
+  const raised = makeBuck(body, buckOpts(outlines, { guide: 0, marks: 'raised', raise: 0.5 }));
+  const hr = heightOf(raised.mesh);
+  assert.equal(raised.info.marks, 'raised');
+  assert.ok(Math.abs(line(50, 0) - roof) < 0.02);
+  assert.ok(Math.abs(hr(50, 0) - (roof + 0.5)) < 0.02, `raised window: ${hr(50, 0)}`);
+  assert.ok(Math.abs(hr(20, 0) - roof) < 0.02, `roof round it: ${hr(20, 0)}`);
+  // The raised area is about the outline, a sheet and the allowance smaller.
+  assert.ok(hr(36.2, 0) > roof + 0.4 && hr(34.4, 0) < roof + 0.1, `edge: ${hr(36.2, 0)} ${hr(34.4, 0)}`);
+  const groove = heightOf(makeBuck(body, buckOpts(outlines, { guide: 0, marks: 'groove', grooveWidth: 0.6, grooveDepth: 0.3 })).mesh);
+  assert.ok(groove(35, 0) < roof - 0.15, `groove on the outline: ${groove(35, 0)}`);
+  assert.ok(Math.abs(groove(50, 0) - roof) < 0.02);
+  assert.throws(() => makeBuck(body, buckOpts(outlines, { marks: 'raised', raise: 2 })), /Raise the windows/);
+});
+
+test('a buck per window: its surface where the formed pane fits the glass', async () => {
+  const { makeWindowBucks } = await import('../src/geometry/lenses.js');
+  const { windowOutlines } = await import('../src/geometry/windows.js');
+  const surface = (kind, depth = 0) => {
+    const ol = windowOutlines([side()], 0.25).map((o) => ({ name: o.window.name, points: o.points, normal: o.normal, glass: { kind, thick: 1, depth, overlap: 1.5 } }));
+    const r = makeWindowBucks(body, ol, { wall: 1, sheet: 0.5, allowance: 0.1 });
+    assert.deepEqual(r.info.warnings, []);
+    assert.equal(meshStats(r.car).openEdges, 0);
+    assert.equal(meshStats(r.print).openEdges, 0);
+    return -40 + rayCaster(r.car.positions, r.car.indices)([45, -40, 16], [0, 1, 0]);
+  };
+  assert.ok(Math.abs(surface('inside') + 18.4) < 0.02, 'inside: wall + sheet + allowance in');
+  assert.ok(Math.abs(surface('flush') + 19.5) < 0.02, 'flush: a sheet in, so the pane is level');
+  assert.ok(Math.abs(surface('top') + 20) < 0.02, 'on top: on the body');
+  assert.ok(Math.abs(surface('setin', 0.3) + 19.2) < 0.02, 'set in: set-back and sheet in');
+});

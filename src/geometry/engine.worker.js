@@ -6,7 +6,7 @@ import { classifySkins, volume, wallThickness } from './shell.js';
 import { rayCaster } from './rays.js';
 import { findArches } from './chassis.js';
 import { makeBuck } from './buck.js';
-import { makeLenses } from './lenses.js';
+import { makeLenses, makeWindowBucks } from './lenses.js';
 import { glassFor, windowOutlines, windowState } from './windows.js';
 import { solidPreview } from './solid.js';
 import { symmetryReport } from './symmetry.js';
@@ -103,21 +103,39 @@ const methods = {
     if (!current) throw Error('No model is built yet.');
     return findArches(body ?? current);
   },
-  // The window buck, from the body before its windows are cut and its posts
-  // added. The windows and posts of the last build go in as outlines and checks.
+  // The glazing buck, from the body before its windows are cut and its posts
+  // added. The windows and posts of the last build go in as outlines and
+  // checks. opts.mode: 'cabin' (one insert for the windows with their glass
+  // inside; glass on the outside gets a buck per window) or 'each' (a buck
+  // per window; lights with glass inside get theirs under Clear parts).
   buck({ opts }) {
     if (!source || !lastSteps) throw Error('No model is built yet.');
     const at = lastSteps.findIndex((s) => (s.type === 'windows' || s.type === 'posts') && s.enabled);
     const uncut = at < 0 ? current : replay(source, lastSteps.slice(0, at), cache, ctx).mesh;
     const win = lastSteps.find((s) => s.type === 'windows' && s.enabled);
     const posts = lastSteps.find((s) => s.type === 'posts' && s.enabled);
-    const outlines = windowOutlines(win?.params.windows ?? []).map((o) => ({
-      name: `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}`,
-      points: o.points,
-      normal: o.normal,
-    }));
-    const { mesh, info } = makeBuck(uncut, { ...opts, outlines, posts: posts?.params.posts ?? [] });
-    return { value: { positions: mesh.positions, indices: mesh.indices, info }, transfer: (v) => [v.positions.buffer, v.indices.buffer] };
+    const gp = win?.params ?? {};
+    const name = (o) => `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}`;
+    const outside = (w) => windowState(w) === 'open' && glassFor(w, gp).kind !== 'inside';
+    const each = (w) => windowState(w) === 'open' && (outside(w) || (opts.mode === 'each' && !w.lens));
+    const all = win?.params.windows ?? [];
+    const cabinWins = opts.mode === 'each' ? [] : all.filter((w) => !outside(w));
+    let cabin = null;
+    if (opts.mode !== 'each' && cabinWins.some((w) => !w.lens)) {
+      const outlines = windowOutlines(cabinWins).map((o) => ({ name: name(o), points: o.points, normal: o.normal }));
+      cabin = makeBuck(uncut, { ...opts, outlines, posts: posts?.params.posts ?? [] });
+    }
+    const own = windowOutlines(all.filter(each), 0.25).map((o) => ({ name: name(o), points: o.points, normal: o.normal, glass: glassFor(o.window, gp) }));
+    const windows = own.length ? makeWindowBucks(uncut, own, opts) : null;
+    if (!cabin && !windows) throw Error('No window to make a buck for: draw the windows first (Windows), and set them Open or Solid.');
+    const value = {
+      positions: cabin?.mesh.positions ?? new Float32Array(0),
+      indices: cabin?.mesh.indices ?? new Uint32Array(0),
+      info: cabin?.info ?? null,
+      windows,
+    };
+    const bufs = (v) => [v.positions.buffer, v.indices.buffer];
+    return { value, transfer: (v) => [...bufs(v), ...(v.windows ? [...bufs(v.windows.car), ...bufs(v.windows.print)] : [])] };
   },
   // Clear parts (printed, and bucks to vac-form the lights), from the body
   // before its windows are cut, for every open window not left out, each

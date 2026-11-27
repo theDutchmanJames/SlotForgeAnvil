@@ -111,6 +111,7 @@ export function cutter(points, normal, depth) {
     const z = dot(p, d) - at(x, y);
     return Math.min(k, z - lo, hi - z);
   };
+  inside2d.cell = cell;
   return { f, inside2d, u, v, d, at, lo, hi, size, poly };
 }
 
