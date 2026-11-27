@@ -170,6 +170,29 @@ export function cleanOut(mesh, { wall, cell = null }) {
           roof[j * nx + i] = Z(k);
           break;
         }
+  // The outside seen from the sides and the ends stays: where a sideways
+  // ray from outside first meets the body, and that is no more than `tuck`
+  // in from the furthest out the body reaches above it there (a door or a
+  // bumper tucking in below its widest point). An arch's inner wall, seen
+  // through the arch, lies well in from the wing above it, and goes.
+  const tuck = Math.max(4, 3 * wall);
+  const band = Math.max(0.3, 1.5 * h);
+  // Per row: does its first meeting from that side count as the outside?
+  const outerAbove = (lo, rows, cols, out) => {
+    const flag = new Uint8Array(rows * cols);
+    for (let c = 0; c < cols; c++) {
+      let best = out > 0 ? -Infinity : Infinity; // furthest out so far, from the top down
+      for (let k = rows - 1; k >= 0; k--) {
+        const v = lo[k * cols + c];
+        if (!Number.isFinite(v)) continue;
+        if (out > 0 ? v > best : v < best) best = v;
+        if (Math.abs(v - best) <= tuck) flag[k * cols + c] = 1;
+      }
+    }
+    return flag;
+  };
+  const okYLo = outerAbove(yLo, nz, nx, -1), okYHi = outerAbove(yHi, nz, nx, 1);
+  const okXLo = outerAbove(xLo, nz, ny, -1), okXHi = outerAbove(xHi, nz, ny, 1);
   const lerp = (a, b2, t) => a + (b2 - a) * t;
   // > 0 where the body goes.
   const f = (p) => {
@@ -182,7 +205,17 @@ export function cleanOut(mesh, { wall, cell = null }) {
     // Straight below the cut-away space: a column counts where all four
     // round the spot reach down here (so the cut stays inside the wall).
     const r = Math.min(roof[j * nx + i], roof[j * nx + i + 1], roof[(j + 1) * nx + i], roof[(j + 1) * nx + i + 1]);
-    return Math.max(depth, r - p[2]);
+    let go = Math.max(depth, r - p[2]);
+    // Never the outside seen from a side or an end (see above).
+    const ii = Math.round(fi), jj = Math.round(fj), kk = Math.round(fk);
+    const keepIf = (ok, lo, idx, d) => {
+      if (ok[idx]) go = Math.min(go, d - band);
+    };
+    keepIf(okYLo, yLo, kk * nx + ii, p[1] - yLo[kk * nx + ii]);
+    keepIf(okYHi, yHi, kk * nx + ii, yHi[kk * nx + ii] - p[1]);
+    keepIf(okXLo, xLo, kk * ny + jj, p[0] - xLo[kk * ny + jj]);
+    keepIf(okXHi, xHi, kk * ny + jj, xHi[kk * ny + jj] - p[0]);
+    return go;
   };
   // Every corner kept at its own number (the new ones after), so each
   // piece left can tell which part of the model it came from.

@@ -73,4 +73,12 @@ test('test car Porsche (a scan with closed arches): an empty shell, the arches o
   const b = bounds(out.positions);
   const x = b.min[0] + b.size[0] * 0.18;
   assert.ok(cast([x, b.min[1] - 5, b.min[2] + b.size[2] * 0.25], [0, 1, 0]) > 30, 'nothing behind the arch opening');
+  // The doors stay whole, also below their widest point where they tuck in.
+  const before = rayCaster(car.positions, car.indices);
+  for (const z of [2, 4, 8, 12, 20])
+    for (const dx of [-30, -15, 0, 15]) {
+      const p = [b.min[0] + b.size[0] / 2 + dx, b.min[1] - 20, b.min[2] + z];
+      const t0 = before(p, [0, 1, 0]), t1 = cast(p, [0, 1, 0]);
+      assert.ok(Math.abs(t0 - t1) < 0.05, `door at ${dx}, ${z}: ${t0} before, ${t1} after`);
+    }
 });
