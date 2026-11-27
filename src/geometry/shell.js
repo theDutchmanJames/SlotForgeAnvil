@@ -3,6 +3,7 @@
 // old inner skin is taken away first; for a solid or a single skin, the
 // outer surface is used as it is.
 import { bounds } from './bounds.js';
+import { cleanOut } from './cleanout.js';
 import { applySlice } from './engine.js';
 import { faceFrame, rayCaster, sampleFaces } from './rays.js';
 import { next, pairEdges, partsOf, splitTouching } from './topology.js';
@@ -164,13 +165,22 @@ export function thicknessAt(p, opts, zmin, zmax) {
 export function applyHollow(mesh, opts) {
   const o = { wall: 1, top: null, strokes: [], ...opts };
   if (!(o.wall > 0)) throw Error('Enter a wall thickness above 0.');
+  const info = {};
+  // Clean out first (see cleanout.js): what is not the outside goes, and
+  // all below the shrunk car, so the shell is empty and open underneath.
+  if (o.clean) {
+    const thickest = Math.max(o.wall, Number.isFinite(o.top) ? o.top : 0, ...(o.strokes ?? []).map((s) => s.wall ?? 0));
+    const c = cleanOut(mesh, { wall: thickest });
+    mesh = c.mesh;
+    info.cleaned = c.info.removed;
+  }
   let { positions, indices } = mesh;
   let cast = rayCaster(positions, indices);
-  const info = {};
   const b0 = bounds(positions);
 
-  // A model that is already hollow: keep only its outer skin.
-  const wall = wallEstimate(mesh, cast);
+  // A model that is already hollow: keep only its outer skin (cleaned out,
+  // there is only the outer skin left).
+  const wall = o.clean ? null : wallEstimate(mesh, cast);
   if (wall != null && wall < b0.size[2] * 0.2) {
     const label = classifySkins(mesh, cast);
     const keep = [];

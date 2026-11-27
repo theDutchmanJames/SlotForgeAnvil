@@ -1365,9 +1365,10 @@ function hollowOptions() {
   const d = PRINT_WALLS[p.process];
   const editing = project.steps.find((s) => s.id === ui.editStep && s.type === 'hollow');
   if (editing && ui.hollow?.for !== editing.id) {
-    ui.hollow = { for: editing.id, wall: editing.params.wall, lighten: Number.isFinite(editing.params.top), top: editing.params.top ?? d.top };
+    ui.hollow = { for: editing.id, wall: editing.params.wall, lighten: Number.isFinite(editing.params.top), top: editing.params.top ?? d.top, clean: !!editing.params.clean };
   } else if (!editing && (!ui.hollow || ui.hollow.for)) {
-    ui.hollow = { for: null, wall: snapWall(d.wall), lighten: false, top: snapWall(d.top) };
+    // New: cleaned out (an empty shell); steps saved before keep how they built.
+    ui.hollow = { for: null, wall: snapWall(d.wall), lighten: false, top: snapWall(d.top), clean: true };
   }
   return ui.hollow;
 }
@@ -1389,6 +1390,8 @@ function panelHollow(editing) {
     ${printSettings()}
     <div class="f">Wall<div class="row">${numField('hollow-wall', round(toUnits(o.wall, u), 3), u)}<span class="muted" style="font-size:12px">${lines(o.wall)}</span></div>
       ${o.wall < min ? `<div class="note warn" style="font-weight:400">Thinner than ${fmtLen(min, u)} may not print or survive a crash.</div>` : ''}</div>
+    <label class="chk"><input type="checkbox" data-act="clean-toggle" ${o.clean ? 'checked' : ''}>Clean out the inside</label>
+    <div class="muted" style="font-weight:400;font-size:12px;margin-top:-4px">Everything that is not the outside goes: seats, a dashboard, an old inner wall, closed wheel arches, a floor. The car is shrunk by the wall and all inside it, and straight below it, is cut away, so you get an empty shell, open underneath.</div>
     <label class="chk"><input type="checkbox" data-act="top-toggle" ${o.lighten ? 'checked' : ''}>Lighten the top</label>
     ${o.lighten ? `<div class="f">Wall at the roof<div class="row">${numField('hollow-top', round(toUnits(o.top, u), 3), u)}<span class="muted" style="font-size:12px">${lines(o.top)}</span></div>
       <div class="muted" style="font-weight:400;font-size:12px">The wall thins evenly from the sills (${fmtLen(o.wall, u)}) up to the roof. Less weight up high.</div></div>` : ''}
@@ -3352,7 +3355,7 @@ function stepDetail(step, info) {
   }
   if (step.type === 'floor') return `${p.mode} at ${fmtLen(p.at, u)}${p.mode === 'squish' ? `, ${fmtLen(p.blend, u)} zone` : ''}${info?.pressed ? ` · ${info.pressed}% pressed` : ''}${info?.walls ? ' · wall closed' : ''}`;
   if (step.type === 'hollow')
-    return `wall ${fmtLen(p.wall, u)}${Number.isFinite(p.top) ? `, roof ${fmtLen(p.top, u)}` : ''}${p.strokes?.length ? `, ${p.strokes.length} painted` : ''}${info?.oldWall ? ` · old wall was ${fmtLen(info.oldWall, u)}` : ''}${info?.solid ? ' · thin parts kept solid' : ''}`;
+    return `wall ${fmtLen(p.wall, u)}${Number.isFinite(p.top) ? `, roof ${fmtLen(p.top, u)}` : ''}${p.strokes?.length ? `, ${p.strokes.length} painted` : ''}${p.clean ? ' · cleaned out' : ''}${info?.oldWall ? ` · old wall was ${fmtLen(info.oldWall, u)}` : ''}${info?.solid ? ' · thin parts kept solid' : ''}`;
   if (step.type === 'hammer')
     return `${p.blows.length} blow${p.blows.length === 1 ? '' : 's'}${p.dollies?.length ? `, ${p.dollies.length} dolly spots` : ''}${info?.added ? ` · ${info.added.toLocaleString()} edges split` : ''}`;
   if (step.type === 'stretch')
@@ -4179,10 +4182,15 @@ const actions = {
     hollowOptions().lighten = !hollowOptions().lighten;
     renderPanel();
   },
+  'clean-toggle'() {
+    const o = hollowOptions();
+    o.clean = !o.clean;
+    renderPanel();
+  },
   'hollow-apply'() {
     const o = hollowOptions();
     const editing = project.steps.find((s) => s.id === ui.editStep && s.type === 'hollow');
-    addOrUpdateStep('hollow', { wall: o.wall, top: o.lighten ? o.top : null, strokes: editing?.params.strokes ?? [] });
+    addOrUpdateStep('hollow', { wall: o.wall, top: o.lighten ? o.top : null, strokes: editing?.params.strokes ?? [], ...(o.clean ? { clean: true } : {}) });
     if (!ui.look.thickness) actions.look('thickness');
   },
   'chassis-new'() {
