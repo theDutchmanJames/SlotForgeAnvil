@@ -178,15 +178,27 @@ export function cleanOut(mesh, { wall, cell = null }) {
   const tuck = Math.max(4, 3 * wall);
   const band = Math.max(0.3, 1.5 * h);
   // Per row: does its first meeting from that side count as the outside?
+  // Going down row by row the outside steps in gradually; a jump (a ray
+  // through a window opening onto the inside) does not count, nor what
+  // follows it until the rows come back out to the outside.
+  const step = Math.max(1.5, 3 * h);
   const outerAbove = (lo, rows, cols, out) => {
     const flag = new Uint8Array(rows * cols);
     for (let c = 0; c < cols; c++) {
       let best = out > 0 ? -Infinity : Infinity; // furthest out so far, from the top down
+      let prev = null, prevOk = false;
       for (let k = rows - 1; k >= 0; k--) {
         const v = lo[k * cols + c];
-        if (!Number.isFinite(v)) continue;
+        if (!Number.isFinite(v)) {
+          prev = null;
+          prevOk = false;
+          continue;
+        }
         if (out > 0 ? v > best : v < best) best = v;
-        if (Math.abs(v - best) <= tuck) flag[k * cols + c] = 1;
+        const ok = Math.abs(v - best) <= tuck && (Math.abs(v - best) <= step || (prevOk && Math.abs(v - prev) <= step));
+        if (ok) flag[k * cols + c] = 1;
+        prev = v;
+        prevOk = ok;
       }
     }
     return flag;
