@@ -71,7 +71,7 @@ test('a light not on the body is reported and makes no lens; no lights at all is
   assert.equal(r.info.lights.length, 1);
   assert.equal(r.info.warnings.length, 1);
   assert.match(r.info.warnings[0], /^Stray:/);
-  assert.throws(() => makeLenses(shell(), [], { wall: 1 }), /Mark a light/);
+  assert.throws(() => makeLenses(shell(), [], { wall: 1 }), /Draw a window or a light first/);
 });
 
 test('an outline moved out and in keeps its corners in step', () => {

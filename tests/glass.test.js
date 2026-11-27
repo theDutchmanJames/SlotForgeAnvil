@@ -112,3 +112,39 @@ test('a project with glass outside needs the newer project format', async () => 
   p.steps[p.steps.length - 1].params.windows = [side({ glass: 'flush' })];
   assert.equal(JSON.parse(encodeProjectFile(p)).version, 5);
 });
+
+test('clear parts follow where the glass sits: their face and back on the body, in the rebate or the seat', async () => {
+  const { makeLenses } = await import('../src/geometry/lenses.js');
+  const { windowOutlines } = await import('../src/geometry/windows.js');
+  const { bounds } = await import('../src/geometry/engine.js');
+  const part = (kind, extra = {}) => {
+    const g = { kind, thick: 1, depth: 0, overlap: 1.5, minWall: 0.6, ...extra };
+    const ol = windowOutlines([side()], 0.25).map((o) => ({ name: o.window.name, points: o.points, normal: o.normal, glass: g }));
+    const r = makeLenses(body, ol, { wall: 1, clearance: 0.1 });
+    assert.deepEqual(r.info.warnings, []);
+    const s = meshStats(r.car.lenses);
+    assert.equal(s.openEdges, 0);
+    assert.equal(s.faultyEdges, 0);
+    assert.equal(s.parts, 1);
+    return { b: bounds(r.car.lenses.positions), r };
+  };
+  const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 0.02, `${msg}: ${a} not ${b}`);
+  // Flush: face level with the body (y = -20), back on the rebate floor, the clearance smaller.
+  let { b, r } = part('flush');
+  near(b.min[1], -20, 'flush face');
+  near(b.max[1], -19, 'flush back');
+  near(b.min[0], 30.1, 'flush clearance');
+  assert.equal(r.car.plugs.indices.length, 0, 'glass outside gets its buck under Glazing buck');
+  // On top: lies on the body, the glass thickness proud, the outline's size.
+  ({ b } = part('top'));
+  near(b.min[1], -21, 'top face');
+  near(b.max[1], -20, 'top back');
+  near(b.min[0], 30, 'top size');
+  // Set in, set back 0.3: the flange in the seat, the plug down to the inside of the wall.
+  ({ b } = part('setin', { depth: 0.3 }));
+  near(b.min[1], -19.7, 'set-in face');
+  near(b.max[1], -18.1, 'plug to the inside of the thickened wall');
+  // Inside, set back 0.2: the lens's face that far in.
+  ({ b } = part('inside', { depth: 0.2 }));
+  near(b.min[1], -19.8, 'inside face');
+});

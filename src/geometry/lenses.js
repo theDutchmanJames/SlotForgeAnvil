@@ -1,3 +1,12 @@
+// Clear parts: printed glass for every open window, headlights and
+// taillights included, shaped for where its glass sits (see glassFor in
+// windows.js): inside fills the opening with a lip behind the wall (the light
+// lens); flush is a pane in the rebate, its face level with the body; on top
+// a pane lying on the body over the opening; set in a pane in the rebate
+// with a plug that fills the opening. Every face and back is the body's own
+// outside there, moved along the window's facing, so the part follows the
+// curve exactly. The rest of this note is about the inside lens.
+//
 // Light lenses: a clear lens that fits a headlight or taillight opening
 // exactly. The opening is an open window marked Lens; both kinds of lens are
 // made from that same outline, on the body before its windows are cut:
@@ -17,7 +26,7 @@ import { fillLoop } from './fill.js';
 import { rayCaster } from './rays.js';
 import { applyReduce } from './reduce.js';
 import { consistentFlips, joinMeshes, pairEdges } from './topology.js';
-import { cutter } from './windows.js';
+import { cutter, insetPoly } from './windows.js';
 
 export const LENS_DEFAULTS = { clearance: 0.1, lip: 0.6, lipWidth: 0.8, sheet: 0.3, allowance: 0.1, margin: 1.5, skirt: 2, plinth: 2, draft: 2, guide: 0.1, gap: 4 };
 
@@ -133,10 +142,82 @@ function bands(idx, A, B) {
   }
 }
 
+// Two rings round a part joined by a band, when they do not have the same
+// number of points: each step goes along the ring whose next point is
+// nearer (in the plane of the window).
+function stitch(idx, pos, A, B) {
+  const d = (a, b) => Math.hypot(pos[a * 3] - pos[b * 3], pos[a * 3 + 1] - pos[b * 3 + 1]);
+  let start = 0, best = Infinity;
+  B.forEach((v, j) => {
+    const x = d(A[0], v);
+    if (x < best) (best = x), (start = j);
+  });
+  B = [...B.slice(start), ...B.slice(0, start)];
+  const nA = A.length, nB = B.length;
+  let i = 0, j = 0;
+  while (i < nA || j < nB) {
+    const a = A[i % nA], a1 = A[(i + 1) % nA], b = B[j % nB], b1 = B[(j + 1) % nB];
+    if (j >= nB || (i < nA && d(a1, b) <= d(a, b1))) {
+      idx.push(a, a1, b);
+      i++;
+    } else {
+      idx.push(a, b1, b);
+      j++;
+    }
+  }
+}
+
+// A clear part for glass on the outside, in the window's frame (outside
+// up). g: { kind: flush | top | setin, thick, depth, overlap, minWall }.
+function outsidePart(f, o, g) {
+  const { c, outside, insideSkin } = f;
+  const pos = [], idx = [];
+  const ring = (pts, h) =>
+    pts.map(([x, y]) => {
+      pos.push(x, y, h(x, y));
+      return pos.length / 3 - 1;
+    });
+  const mean = (pts, h) => pts.reduce((s, [x, y]) => s + h(x, y), 0) / pts.length;
+  const onBody = (pts) => pts.every(([x, y]) => Number.isFinite(outside(x, y)));
+  // On top: the outline itself, lying on the body. Flush and set in: the
+  // fit clearance smaller, sunk into the rebate.
+  const pane = g.kind === 'top' ? c.poly : offsetOutline(c.poly, -o.clearance);
+  if (!onBody(pane)) return { error: 'the outline is not all on the body' };
+  const face = g.kind === 'top' ? (x, y) => outside(x, y) + g.thick : (x, y) => outside(x, y) - g.depth;
+  const back = g.kind === 'top' ? (x, y) => outside(x, y) : (x, y) => outside(x, y) - g.depth - g.thick;
+  const A = ring(pane, face), B = ring(pane, back);
+  for (const t of liftedPatch(pos, A, pane, face, mean(pane, face))) idx.push(...t);
+  bands(idx, A, B);
+  if (g.kind !== 'setin') {
+    for (const t of liftedPatch(pos, B, pane, back, mean(pane, back))) idx.push(...t);
+    return { mesh: outward(pos, idx) };
+  }
+  // Set in: a plug through the opening (the overlap smaller than the
+  // outline, and the fit clearance), down to the inside of the wall, which
+  // Windows thickens to at least minWall behind the rebate.
+  const plug = insetPoly(c.poly, g.overlap + o.clearance);
+  if (!plug.length) return { error: `the window is too small for a ${g.overlap} mm overlap` };
+  if (!onBody(plug)) return { error: 'the outline is not all on the body' };
+  const inner = (x, y) => {
+    const h0 = outside(x, y);
+    const hi = insideSkin(x, y, o.wall);
+    const floor = h0 - g.depth - g.thick;
+    return Math.min(Number.isFinite(hi) ? hi : h0 - o.wall, floor - g.minWall);
+  };
+  const C = ring(plug, back), D = ring(plug, inner);
+  stitch(idx, pos, B, C);
+  bands(idx, C, D);
+  for (const t of liftedPatch(pos, D, plug, inner, mean(plug, inner))) idx.push(...t);
+  return { mesh: outward(pos, idx) };
+}
+
 // The printed lens, in the light's frame (outside up). Returns a reason
-// instead when the outline is not on the body.
-function printedLens(f, o) {
-  const { c, outside, insideSkin, cast, toCar } = f;
+// instead when the outline is not on the body. depth: how far its face sits
+// back from the body's outside.
+function printedLens(f, o, depth = 0) {
+  const { c, cast, toCar } = f;
+  const outside = depth > 0 ? (x, y) => f.outside(x, y) - depth : f.outside;
+  const insideSkin = f.insideSkin;
   const inner = offsetOutline(c.poly, -o.clearance);
   const lip = offsetOutline(c.poly, o.lipWidth);
   const hIn = inner.map(([x, y]) => outside(x, y));
@@ -340,31 +421,38 @@ function layOut(list, gap) {
 
 const EMPTY = () => ({ positions: new Float32Array(0), indices: new Uint32Array(0) });
 
-// outlines: [{ name, points, normal }] of the lights; opts: LENS_DEFAULTS + wall.
-// Returns both kinds on the car (to look at) and laid out (to print).
+// outlines: [{ name, points, normal, glass }] of the windows and lights;
+// glass: { kind, thick, depth, overlap, minWall } (see glassFor in
+// windows.js; inside when left out). opts: LENS_DEFAULTS + wall. Returns
+// both kinds on the car (to look at) and laid out (to print). A lens buck
+// is made for glass inside; glass on the outside gets its own buck under
+// Glazing buck.
 export function makeLenses(mesh, outlines, opts) {
   const o = { ...LENS_DEFAULTS, ...opts };
   if (!(o.wall > 0)) throw Error('Enter the wall thickness of the body.');
-  if (!outlines.length) throw Error('Mark a light first: draw its outline in Windows, set it Open and switch on Lens.');
+  if (!outlines.length) throw Error('Draw a window or a light first (Windows), and set it Open.');
   const cast = rayCaster(mesh.positions, mesh.indices);
   const lenses = [], plugs = [], carLenses = [], carPlugs = [], lights = [], warnings = [];
   for (const ol of outlines) {
-    const f = lightFrame(ol, cast, o.margin + o.wall + o.sheet + o.allowance + 2);
-    const lens = printedLens(f, o);
-    const plug = lensBuck(f, o);
-    if (lens.error || plug.error) {
-      warnings.push(`${ol.name}: ${lens.error ?? plug.error}, so it has no lens`);
+    const g = { kind: 'inside', thick: 1, depth: 0, overlap: 0, minWall: 0.6, ...ol.glass };
+    const f = lightFrame(ol, cast, o.margin + o.wall + o.sheet + o.allowance + 2 + g.depth + g.thick);
+    const lens = g.kind === 'inside' ? printedLens(f, o, g.depth) : outsidePart(f, o, g);
+    const plug = g.kind === 'inside' ? lensBuck(f, o) : null;
+    if (lens.error || plug?.error) {
+      warnings.push(`${ol.name}: ${lens.error ?? plug.error}, so it has no clear part`);
       continue;
     }
     if (lens.blocked > 0.05) warnings.push(`${ol.name}: the printed lens's lip runs into the body behind the wall round ${Math.round(lens.blocked * 100)}% of it; make the lip narrower or thinner`);
-    if (plug.missed > 0.02) warnings.push(`${ol.name}: ${Math.round(plug.missed * 100)}% of the lens buck's glue margin is off the body (the lamp sits in a deep bowl, or near an edge); the buck is filled there. A smaller glue margin may fit`);
+    if (plug?.missed > 0.02) warnings.push(`${ol.name}: ${Math.round(plug.missed * 100)}% of the lens buck's glue margin is off the body (the lamp sits in a deep bowl, or near an edge); the buck is filled there. A smaller glue margin may fit`);
     lenses.push(lens.mesh);
-    plugs.push(plug.mesh);
     carLenses.push(onCar(f, lens.mesh));
-    carPlugs.push(onCar(f, plug.mesh));
+    if (plug) {
+      plugs.push(plug.mesh);
+      carPlugs.push(onCar(f, plug.mesh));
+    }
     let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
     for (const [x, y] of f.c.poly) (lo = [Math.min(lo[0], x), Math.min(lo[1], y)]), (hi = [Math.max(hi[0], x), Math.max(hi[1], y)]);
-    lights.push({ name: ol.name, size: [hi[0] - lo[0], hi[1] - lo[1]] });
+    lights.push({ name: ol.name, kind: g.kind, size: [hi[0] - lo[0], hi[1] - lo[1]] });
   }
   const join = (l) => (l.length ? joinMeshes(l) : EMPTY());
   return {

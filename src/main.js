@@ -414,7 +414,7 @@ const MENUS = [
     tools: [['windows', 'window', 'Windows'], ['lights', 'bulb', 'LED lights']],
   },
   { id: 'posts', name: 'Posts', tools: [['posts', 'post', 'Posts'], ['tabs', 'tab', 'Tabs'], ['posteditor', 'wrench', 'Post editor']] },
-  { id: 'buck', name: 'Buck', tools: [['buck', 'buck', 'Window buck'], ['lenses', 'bulb', 'Light lenses']] },
+  { id: 'buck', name: 'Glass', tools: [['buck', 'buck', 'Glazing buck'], ['lenses', 'bulb', 'Clear parts']] },
 ];
 
 function renderAll() {
@@ -2640,7 +2640,7 @@ function panelWindows(editing) {
     .map(
       (w) => `<div class="prow${ui.win.editing === w.id ? ' cur' : ''}"><span><b>${esc(w.name)}</b><small>${w.points.length} points${w.mirror ? ' · both sides' : ''}${w.lens && windowState(w) === 'open' ? ' · lens' : ''}</small></span>
         <span class="seg">${[['open', 'Open', 'Cut through the wall'], ['solid', 'Solid', 'Only an outline, for the buck'], ['fill', 'Close', 'Fill an opening the model came with'], ['recess', 'Recessed', 'Sink the glass a little, for a crisp painted window']].map(([k, n, t]) => `<button data-act="win-state" data-v="${w.id}|${k}" class="${windowState(w) === k ? 'on' : ''}" title="${t}">${n}</button>`).join('')}</span>
-        ${windowState(w) === 'open' ? `<button class="btn sm icon ghost${w.lens ? ' on' : ''}" data-act="win-lens" data-v="${w.id}" title="${w.lens ? 'A light: Buck › Light lenses makes a lens for it. Click to make it a plain window again' : 'Lens: a headlight or taillight. Buck › Light lenses then makes a clear lens that fits it'}">${icon('bulb')}</button>` : ''}
+        ${windowState(w) === 'open' ? `<button class="btn sm icon ghost${w.lens ? ' on' : ''}" data-act="win-lens" data-v="${w.id}" title="${w.lens ? 'A light (headlight or taillight). Click to make it a plain window again' : 'A light: a headlight or taillight. Glass › Clear parts makes a clear lens for it, as for every window'}">${icon('bulb')}</button>` : ''}
         <button class="btn sm icon ghost" data-act="win-mirror" data-v="${w.id}" title="${w.mirror ? 'Only this side' : 'Both sides'}">${icon('mirror')}</button>
         <button class="btn sm icon ghost" data-act="win-edit" data-v="${w.id}" title="Change the outline">${icon('line')}</button>
         <button class="btn sm icon ghost" data-act="win-delete" data-v="${w.id}" title="Remove this window">${icon('trash')}</button></div>
@@ -2872,7 +2872,7 @@ function panelBuck() {
     stale = r && buck.key !== buckKey();
   const f = (k, label, digits = 2) => `<span class="fx">${label}${numField(`bk-${k}`, round(toUnits(s[k], u), digits), u)}</span>`;
   const wins = allWindows();
-  return `${head('Window buck', 'One plug for the whole cabin: vac-form clear sheet over it and glue the insert in from the inside. Made from the body before its windows are cut.')}
+  return `${head('Glazing buck', 'One plug for the whole cabin: vac-form clear sheet over it and glue the insert in from the inside. Made from the body before its windows are cut.')}
     ${wins.length ? '' : '<div class="muted" style="font-size:12px">Draw the windows first (Windows menu): their outlines become raised guide lines on the buck, and the trim line follows them.</div>'}
     <div class="f">Trim line (green on the car)<div class="g2">${f('trimFront', 'Height at the front')}${f('trimRear', 'Height at the back')}</div>
       <span class="muted" style="font-weight:400;font-size:12px">The formed sheet is cut off here. It should run at least the glue margin below every window.</span></div>
@@ -2895,7 +2895,7 @@ function panelBuck() {
     }`;
 }
 
-// ------------------------------------------------------------ light lenses
+// ------------------------------------------------------------ clear parts
 
 function lensSettings() {
   const s = { ...LENS_DEFAULTS, ...(project.lenses ?? {}) };
@@ -2905,8 +2905,10 @@ function lensSettings() {
 function setLensSetting(key, value) {
   commit(() => (project.lenses = { ...lensSettings(), [key]: value }), false);
 }
-// The open windows marked Lens.
+// The open windows marked Lens (the lights).
 const lensLights = () => allWindows().filter((w) => w.lens && windowState(w) === 'open');
+// The open windows that get a clear part (all, unless left out).
+const clearWindows = () => allWindows().filter((w) => windowState(w) === 'open');
 // The last lenses made: kept until the body or the settings change.
 const lensJob = { result: null, key: null, busy: false, error: null, show: 'lens' };
 const lensKey = () => JSON.stringify([buildToken, lensSettings()]);
@@ -2937,30 +2939,38 @@ function panelLenses() {
   const r = lensJob.result,
     stale = r && lensJob.key !== lensKey();
   const f = (k, label, digits = 2) => `<span class="fx">${label}${numField(`ln-${k}`, round(toUnits(s[k], u), digits), u)}</span>`;
-  const lights = lensLights();
-  const count = lights.reduce((n, w) => n + (w.mirror ? 2 : 1), 0);
-  return `${head('Light lenses', 'Clear lenses that fit the headlight and taillight openings exactly, made from the same outline that cuts the opening: printed in clear resin, or vac-formed over a small buck. Made from the body before its windows are cut.')}
+  const wins = clearWindows();
+  const skip = new Set(s.skip ?? []);
+  const chosen = wins.filter((w) => !skip.has(w.id));
+  const kinds = new Set(chosen.map(glassOf));
+  const gs = glassSettings();
+  const name = (k) => GLASS_NAMES.find((g) => g[0] === k)[1].toLowerCase();
+  const list = wins
+    .map(
+      (w) => `<label class="chk"><input type="checkbox" data-field="cp-include" data-win="${w.id}" ${skip.has(w.id) ? '' : 'checked'}>${esc(w.name)}${w.mirror ? ' (both sides)' : ''}<span class="muted" style="font-size:12px"> · glass ${name(glassOf(w))}${w.depth > 0 ? `, set back ${fmtLen(w.depth, u, 2)}` : ''}</span></label>`,
+    )
+    .join('');
+  return `${head('Clear parts', 'Printed glass for every window and light, made from the same outline that cuts the opening and shaped for where its glass sits (set under Windows): inside fills the opening with a lip behind the wall, flush sits in the rebate level with the body, on top lies on the body over the opening, set in fills the rebate and the opening. The face and the back follow the body exactly. Print them in clear resin or clear filament.')}
+    ${wins.length ? `<div class="f">Make parts for<div>${list}</div></div>` : '<div class="muted" style="font-size:12px">Draw a window or a light first: in Windows, draw its outline on the body and set it Open.</div>'}
+    <div class="f">Printed parts<div class="g2">${f('clearance', 'Fit clearance')}${kinds.has('inside') ? `${f('lipWidth', 'Lip width')}${f('lip', 'Lip thickness')}` : ''}${f('wall', 'Body wall')}</div>
+      <span class="muted" style="font-weight:400;font-size:12px">${kinds.has('inside') ? 'Glass inside: the part fills the opening, the fit clearance smaller, with a lip behind the wall so it cannot be pushed through. ' : ''}${kinds.size && [...kinds].some((k) => k !== 'inside') ? `Glass on the outside is ${fmtLen(gs.glassThick, u, 2)} thick (or the window's own thickness), as set under Windows.` : ''}</span></div>
     ${
-      lights.length
-        ? `<div class="note">${count} light${count === 1 ? '' : 's'}: ${lights.map((w) => esc(w.name) + (w.mirror ? ' (both sides)' : '')).join(', ')}</div>`
-        : '<div class="muted" style="font-size:12px">Mark a light first: in Windows, draw its outline on the body, set it Open and switch on Lens (the bulb).</div>'
-    }
-    <div class="f">Printed lens<span class="muted" style="font-weight:400;font-size:12px">Fills the opening flush with the body, with a lip behind the wall.</span>
-      <div class="g2">${f('clearance', 'Fit clearance')}${f('lipWidth', 'Lip width')}${f('lip', 'Lip thickness')}${f('wall', 'Body wall')}</div></div>
-    <div class="f">Lens buck<span class="muted" style="font-weight:400;font-size:12px">Vac-form clear sheet over it and glue the lens in from the inside.</span>
+      kinds.has('inside')
+        ? `<div class="f">Lens buck, for glass inside<span class="muted" style="font-weight:400;font-size:12px">Vac-form clear sheet over it and glue the lens in from the inside. Glass on the outside gets its buck under Glazing buck.</span>
       <div class="g2">${f('sheet', 'Sheet thickness')}${f('allowance', 'Fit allowance')}${f('margin', 'Glue margin', 1)}${f('skirt', 'Skirt', 1)}${f('plinth', 'Plinth', 1)}
-      <span class="fx">Draft${numField('ln-draft', s.draft, '°')}</span>${f('guide', 'Guide line height')}</div></div>
-    <div class="row"><button class="btn primary sm" data-act="lens-make"${lensJob.busy || !lights.length ? ' disabled' : ''}>${icon('bulb')}${lensJob.busy ? 'Making the lenses…' : r ? 'Make them again' : 'Make the lenses'}</button></div>
+      <span class="fx">Draft${numField('ln-draft', s.draft, '°')}</span>${f('guide', 'Guide line height')}</div></div>`
+        : ''
+    }
+    <div class="row"><button class="btn primary sm" data-act="lens-make"${lensJob.busy || !chosen.length ? ' disabled' : ''}>${icon('bulb')}${lensJob.busy ? 'Making the clear parts…' : r ? 'Make them again' : 'Make the clear parts'}</button></div>
     ${lensJob.error ? `<div class="note bad">${esc(lensJob.error)}</div>` : ''}
     ${stale ? '<div class="note warn">The body or the settings changed since these were made. Make them again before exporting.</div>' : ''}
     ${
       r && !stale
-        ? `<div class="f">Show on the car<span class="seg">${[['lens', 'Printed lenses'], ['buck', 'Lens bucks']].map(([k, n]) => `<button data-act="lens-show" data-v="${k}" class="${lensJob.show === k ? 'on' : ''}">${n}</button>`).join('')}</span></div>
-          <div class="note">${r.info.lights.map((l) => `${esc(l.name)}: ${fmtLen(l.size[0], u, 1)} × ${fmtLen(l.size[1], u, 1)}`).join('<br>')}<br>
-            <span class="muted">Buck surface ${fmtLen(r.info.offset, u)} inside the body (wall + sheet + allowance).</span></div>
+        ? `${r.car.plugs.indices.length ? `<div class="f">Show on the car<span class="seg">${[['lens', 'Printed parts'], ['buck', 'Lens bucks']].map(([k, n]) => `<button data-act="lens-show" data-v="${k}" class="${lensJob.show === k ? 'on' : ''}">${n}</button>`).join('')}</span></div>` : ''}
+          <div class="note">${r.info.lights.map((l) => `${esc(l.name)}: ${fmtLen(l.size[0], u, 1)} × ${fmtLen(l.size[1], u, 1)}, glass ${name(l.kind ?? 'inside')}`).join('<br>')}</div>
           ${r.info.warnings.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
-          <div class="row"><button class="btn sm" data-act="lens-export" data-v="lens">${icon('export')}Export printed lenses</button><button class="btn sm" data-act="lens-export" data-v="buck">${icon('export')}Export lens bucks</button></div>
-          <div class="muted" style="font-size:12px">Print the lenses in clear resin, outside up, and polish or clear-coat them. Print the bucks solid in fine layers and smooth them: layer lines show through the formed sheet.</div>`
+          <div class="row"><button class="btn sm" data-act="lens-export" data-v="lens">${icon('export')}Export clear parts</button>${r.print.plugs.indices.length ? `<button class="btn sm" data-act="lens-export" data-v="buck">${icon('export')}Export lens bucks</button>` : ''}</div>
+          <div class="muted" style="font-size:12px">Print the parts outside up, in fine layers; polish or clear-coat them for the clearest glass. Clear filament comes out see-through but a little milky; sanding and a clear coat help.${r.print.plugs.indices.length ? ' Print the bucks solid in fine layers and smooth them: layer lines show through the formed sheet.' : ''}</div>`
         : ''
     }`;
 }
@@ -3178,11 +3188,11 @@ function panelFinal() {
     else row('ok', 'Glazing buck', `Ready, glue margin ${fmtLen(buckSettings().margin, u, 1)} everywhere.`);
     if (lensLights().length) {
       const lr = lensJob.result;
-      if (!lr) row('warn', 'Light lenses', 'Not made yet.', 'lenses', 'Make them');
-      else if (lensJob.key !== lensKey()) row('warn', 'Light lenses', 'Made before the last change: make them again.', 'lenses', 'Make them');
-      else if (lr.info.warnings.length) row('warn', 'Light lenses', lr.info.warnings.join('; '), 'lenses', 'Look');
-      else row('ok', 'Light lenses', `${lr.info.lights.length} lens${lr.info.lights.length === 1 ? '' : 'es'} ready, printed and as bucks.`);
-    }
+      if (!lr) row('warn', 'Clear parts', 'Not made yet.', 'lenses', 'Make them');
+      else if (lensJob.key !== lensKey()) row('warn', 'Clear parts', 'Made before the last change: make them again.', 'lenses', 'Make them');
+      else if (lr.info.warnings.length) row('warn', 'Clear parts', lr.info.warnings.join('; '), 'lenses', 'Look');
+      else row('ok', 'Clear parts', `${lr.info.lights.length} clear part${lr.info.lights.length === 1 ? '' : 's'} ready.`);
+    } else if (lensJob.result && lensJob.key !== lensKey()) row('warn', 'Clear parts', 'Made before the last change: make them again.', 'lenses', 'Make them');
   } else row('info', 'Windows', 'No windows drawn: a solid body to paint.', 'windows', 'Draw');
   // Weight and balance
   if (s.volume) {
@@ -4380,9 +4390,9 @@ const actions = {
     const r = lensJob.result;
     if (!r || lensJob.key !== lensKey()) return;
     const m = kind === 'buck' ? r.print.plugs : r.print.lenses;
-    const what = kind === 'buck' ? 'lens bucks' : 'lenses';
+    const what = kind === 'buck' ? 'lens bucks' : 'clear parts';
     download(fileName('stl').replace(/\.stl$/, ` ${what}.stl`), encodeSTL(m, `SlotForge Anvil · ${what} · ${project.name}`), 'model/stl');
-    toast(kind === 'buck' ? 'Lens bucks exported. Print them solid and smooth them before forming.' : 'Lenses exported, outside up. Print them in clear resin.');
+    toast(kind === 'buck' ? 'Lens bucks exported. Print them solid and smooth them before forming.' : 'Clear parts exported, outside up. Print them in clear resin or clear filament.');
   },
   'buck-export'() {
     const r = buck.result;
@@ -4683,6 +4693,12 @@ document.addEventListener('change', (e) => {
     const step = windowsStep();
     if (step && v > 0) commit(() => (step.params = { ...step.params, [f === 'win-pane' ? 'pane' : 'recess']: round(v, 3) }));
     return;
+  }
+  if (f === 'cp-include') {
+    const skip = new Set(lensSettings().skip ?? []);
+    if (e.target.checked) skip.delete(e.target.dataset.win);
+    else skip.add(e.target.dataset.win);
+    return setLensSetting('skip', [...skip]);
   }
   if (f.startsWith('ln-')) {
     const key = f.slice(3);

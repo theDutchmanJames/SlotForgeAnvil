@@ -7,7 +7,7 @@ import { rayCaster } from './rays.js';
 import { findArches } from './chassis.js';
 import { makeBuck } from './buck.js';
 import { makeLenses } from './lenses.js';
-import { windowOutlines, windowState } from './windows.js';
+import { glassFor, windowOutlines, windowState } from './windows.js';
 import { solidPreview } from './solid.js';
 import { symmetryReport } from './symmetry.js';
 import { grooves } from './detail.js';
@@ -119,15 +119,22 @@ const methods = {
     const { mesh, info } = makeBuck(uncut, { ...opts, outlines, posts: posts?.params.posts ?? [] });
     return { value: { positions: mesh.positions, indices: mesh.indices, info }, transfer: (v) => [v.positions.buffer, v.indices.buffer] };
   },
-  // Light lenses (printed, and bucks to vac-form them), from the body before
-  // its windows are cut, for every open window marked Lens.
+  // Clear parts (printed, and bucks to vac-form the lights), from the body
+  // before its windows are cut, for every open window not left out, each
+  // shaped for where its glass sits.
   lenses({ opts }) {
     if (!source || !lastSteps) throw Error('No model is built yet.');
     const at = lastSteps.findIndex((s) => (s.type === 'windows' || s.type === 'posts') && s.enabled);
     const uncut = at < 0 ? current : replay(source, lastSteps.slice(0, at), cache, ctx).mesh;
     const win = lastSteps.find((s) => s.type === 'windows' && s.enabled);
-    const lights = (win?.params.windows ?? []).filter((w) => w.lens && windowState(w) === 'open');
-    const outlines = windowOutlines(lights, 0.25).map((o) => ({ name: `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}`, points: o.points, normal: o.normal }));
+    const lights = (win?.params.windows ?? []).filter((w) => !(opts.skip ?? []).includes(w.id) && windowState(w) === 'open');
+    const gp = win?.params ?? {};
+    const outlines = windowOutlines(lights, 0.25).map((o) => ({
+      name: `${o.window.name}${o.mirrored ? ' (mirrored)' : ''}`,
+      points: o.points,
+      normal: o.normal,
+      glass: { ...glassFor(o.window, gp), minWall: gp.minWall ?? 0.6 },
+    }));
     const out = makeLenses(uncut, outlines, opts);
     const meshes = [out.car.lenses, out.car.plugs, out.print.lenses, out.print.plugs];
     return { value: out, transfer: () => meshes.flatMap((m) => [m.positions.buffer, m.indices.buffer]) };
