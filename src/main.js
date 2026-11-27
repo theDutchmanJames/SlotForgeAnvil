@@ -51,7 +51,7 @@ import { POST_TYPES, checkPostType, fitTestPiece, loosePost } from './geometry/p
 import { TAB_DEFAULTS } from './geometry/mounts.js';
 import { REBUILD_DETAIL, rebuildCell } from './geometry/rebuild.js';
 import { GLASS_DEFAULTS, glassOf, pillarWarnings, windowOutlines, windowState } from './geometry/windows.js';
-import { sampleClosedCurve } from './geometry/curve.js';
+import { mirrorPoint, sampleClosedCurve } from './geometry/curve.js';
 import { BUCK_DEFAULTS } from './geometry/buck.js';
 import { LENS_DEFAULTS } from './geometry/lenses.js';
 import { joinMeshes } from './geometry/topology.js';
@@ -109,6 +109,11 @@ const ui = {
   busy: false,
   // The window tool: drawing a new outline, or changing one.
   win: { draft: null, editing: null, drag: null },
+  // Found windows (Windows › Find windows), the edges they came from (to
+  // snap to) and the spots that looked wrong, by window id.
+  trace: null,
+  traceEdges: null,
+  traceDoubt: {},
 };
 
 // ------------------------------------------------------------ layout
@@ -302,6 +307,9 @@ async function startProject(p, alreadyLoaded = false, panel = 'home') {
   ui.partsDrop = null;
   ui.closeLoops = new Set();
   ui.win = { draft: null, editing: null, drag: null };
+  ui.trace = null;
+  ui.traceEdges = null;
+  ui.traceDoubt = {};
   buck.result = buck.error = null;
   lensJob.result = lensJob.error = null;
   partMeshes.clear();
@@ -2597,7 +2605,8 @@ function activeWindow() {
   return ui.win.editing ? allWindows().find((w) => w.id === ui.win.editing) ?? null : null;
 }
 
-let windowsShown = false;
+let windowsShown = false,
+  doubtShown = false;
 function drawWindows(show) {
   if (!show || !result) {
     if (windowsShown) viewport.curves(null);
@@ -2614,8 +2623,21 @@ function drawWindows(show) {
     const pts = act.points.length >= 3 && !ui.win.draft ? sampleClosedCurve(act.points, act.corners, 0.4) : act.points;
     list.push({ points: pts, closed: !ui.win.draft, color: 0xffffff, active: true, handles: act.points, corners: act.corners, first: !!ui.win.draft });
   }
+  // Found windows not added yet: chosen ones bright, the others dim.
+  for (const [i, w] of (ui.trace?.found ?? []).entries()) {
+    const color = ui.trace.chosen.has(i) ? 0x3ddc84 : 0x56606b;
+    list.push({ points: sampleClosedCurve(w.points, w.corners, 0.4), closed: true, color });
+    if (w.mirror) list.push({ points: sampleClosedCurve(w.points.map(mirrorPoint).reverse(), [...w.corners].reverse(), 0.4), closed: true, color });
+  }
   viewport.curves(list);
   windowsShown = true;
+  // Spots the finder thought looked wrong, on the window being changed.
+  const doubt = act && !ui.win.draft ? ui.traceDoubt[act.id] ?? [] : [];
+  if (doubt.length || doubtShown) {
+    viewport.clearOverlay();
+    for (const p of doubt) viewport.marker({ x: p[0], y: p[1], z: p[2] }, 0xf2b705);
+    doubtShown = doubt.length > 0;
+  }
 }
 
 function panelWindows(editing) {
@@ -2632,11 +2654,13 @@ function panelWindows(editing) {
     tool = `<div class="note">Click points round the window on the body; the line runs smoothly through them. Click the green first point (or Enter) to close it.<br><span class="muted">Ctrl-click a point for a sharp corner · drag a point to move it · Backspace takes the last one back · Esc stops.</span></div>
       <div class="row"><button class="btn primary sm" data-act="win-finish"${d.points.length >= 3 ? '' : ' disabled'}>Close the outline</button><button class="btn sm ghost" data-act="win-cancel">Cancel</button><span class="muted" style="font-size:12px">${d.points.length} point${d.points.length === 1 ? '' : 's'}</span></div>`;
   else if (ui.win.editing && activeWindow())
-    tool = `<div class="note">Changing <b>${esc(activeWindow().name)}</b>: drag a point to move it, Shift-click on the body to add one, Ctrl-click a point for a corner, Alt-click to remove it.</div>
-      <div class="row"><button class="btn sm" data-act="win-done">Done</button></div>`;
+    tool = `<div class="note">Changing <b>${esc(activeWindow().name)}</b>: drag a point to move it, Shift-click on the body to add one, Ctrl-click a point for a corner, Alt-click to remove it.${ui.traceEdges ? ' A dragged point snaps to the edge that was found; hold Shift while dragging to place it freely.' : ''}${(ui.traceDoubt[activeWindow().id] ?? []).length ? ' <b>Yellow spots</b>: the outline bends in sharply there, which a window seldom does: check them.' : ''}</div>
+      ${ui.win.smooth ? `<div class="note">Click the first and the last point of the stretch to smooth: the points between go, and the line runs smoothly from one to the other.${ui.win.smooth.length ? ' Now the last one.' : ''}</div>` : ''}
+      <div class="row"><button class="btn sm" data-act="win-done">Done</button><button class="btn sm ghost${ui.win.smooth ? ' on' : ''}" data-act="win-smooth">Smooth a stretch</button></div>`;
+  else if (ui.trace) tool = traceTool();
   else
-    tool = `<div class="row"><button class="btn primary sm" data-act="win-new">${icon('line')}Draw a window</button></div>
-      <div class="muted" style="font-size:12px">Draw on the outside of the body. The side and front views make it easy; with Mirror on, side windows get their twin on the other side.</div>`;
+    tool = `<div class="row"><button class="btn primary sm" data-act="win-new">${icon('line')}Draw a window</button><button class="btn sm" data-act="win-trace">${icon('window')}Find windows</button></div>
+      <div class="muted" style="font-size:12px">Draw on the outside of the body. The side and front views make it easy; with Mirror on, side windows get their twin on the other side. Find windows traces the openings, glass parts and framed panes the model has; change the outlines after.</div>`;
   const rows = wins
     .map(
       (w) => `<div class="prow${ui.win.editing === w.id ? ' cur' : ''}"><span><b>${esc(w.name)}</b><small>${w.points.length} points${w.mirror ? ' · both sides' : ''}${w.lens && windowState(w) === 'open' ? ' · lens' : ''}</small></span>
@@ -2671,6 +2695,31 @@ function panelWindows(editing) {
     ${pillars.map((p) => `<div class="note warn">${esc(p.text)}: the pillar will be very thin.</div>`).join('')}
     ${(info?.info?.warnings ?? []).map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
     ${drawing || d ? '' : ''}`;
+}
+
+// What Find windows found: each to add or not, and the glass for them all.
+function traceTool() {
+  const t = ui.trace;
+  if (t.busy) return '<div class="note">Looking for the windows…</div>';
+  if (t.error) return `<div class="note bad">${esc(t.error)}</div><div class="row"><button class="btn sm" data-act="win-trace-cancel">Close</button></div>`;
+  const u = project.units;
+  const kind = { opening: 'an opening in the model', part: 'a glass part', recess: 'a pane in a frame' };
+  const rows = t.found
+    .map(
+      (w, i) => `<label class="chk"><input type="checkbox" data-field="tr-pick" data-i="${i}" ${t.chosen.has(i) ? 'checked' : ''}><span>${esc(traceName(w, i))}${w.mirror ? ' (both sides)' : ''}<span class="muted" style="font-size:12px"> · ${kind[w.kind]}${w.kind === 'recess' && w.step > 0.02 ? `, ${fmtLen(w.step, u, 2)} below its frame` : ''} · ${w.points.length} points${w.doubt.length ? ` · ${w.doubt.length} spot${w.doubt.length === 1 ? '' : 's'} to check` : ''}</span></span></label>`,
+    )
+    .join('');
+  return `<div class="f">Found ${t.found.length} window${t.found.length === 1 ? '' : 's'}<span class="muted" style="font-weight:400;font-size:12px">Green on the car are the ones ticked. The ones low on the body may be lights, a grille or a number plate.</span>${rows || '<div class="muted">No openings, glass parts or framed panes found: draw the windows instead.</div>'}</div>
+    ${t.found.length ? `<div class="f">Glass for these<select data-field="tr-glass">${GLASS_NAMES.map(([k, n, ti]) => `<option value="${k}" title="${ti}"${k === t.glass ? ' selected' : ''}>${n}</option>`).join('')}</select>
+      <span class="muted" style="font-weight:400;font-size:12px">Glass on the outside over an opening the model has gets an outline the overlap (${fmtLen(glassSettings().overlap, u, 2)}) larger, so it rests on the body round it.</span></div>` : ''}
+    <div class="row">${t.found.length ? `<button class="btn primary sm" data-act="win-trace-add"${t.chosen.size ? '' : ' disabled'}>Add ${t.chosen.size} window${t.chosen.size === 1 ? '' : 's'}</button>` : ''}<button class="btn sm ghost" data-act="win-trace-cancel">Cancel</button></div>`;
+}
+function traceName(w, i) {
+  // As Anvil names drawn windows, numbered when there are more of a kind.
+  const light = !w.likely && Math.abs(w.normal[0]) > 0.6;
+  const base = light ? (w.normal[0] < 0 ? 'Headlight' : 'Taillight') : windowName(w.normal);
+  const same = ui.trace.found.filter((x, j) => j < i && (!x.likely && Math.abs(x.normal[0]) > 0.6 ? (x.normal[0] < 0 ? 'Headlight' : 'Taillight') : windowName(x.normal)) === base).length;
+  return same ? `${base} ${same + 1}` : base;
 }
 
 // An open window's glass: where it sits, how far back, and its own thickness.
@@ -2725,7 +2774,18 @@ function lineMove(e) {
   const hit = viewport.pick(e);
   if (!hit) return;
   d.moved = true;
-  d.copy.points[d.index] = hit.point.toArray().map((x) => round(x, 3));
+  let at = hit.point.toArray();
+  // Onto the edge Find windows found, when it is close (Shift: free).
+  if (ui.traceEdges && !e.shiftKey) {
+    let best = null, bd = Math.max(1, result.stats.bounds.size[0] * 0.006);
+    for (const edge of ui.traceEdges)
+      for (const q of edge) {
+        const dd = Math.hypot(q[0] - at[0], q[1] - at[1], q[2] - at[2]);
+        if (dd < bd) (bd = dd), (best = q);
+      }
+    if (best) at = best;
+  }
+  d.copy.points[d.index] = at.map((x) => round(x, 3));
   d.copy.normals[d.index] = hit.normal.toArray().map((x) => round(x, 4));
   // Show the move straight away; the cut follows when the mouse is let go.
   const save = ui.win.draft;
@@ -2754,6 +2814,24 @@ function lineUp(e) {
     return saveEdited(w);
   }
   if (!w) return;
+  if (ui.win.smooth && h >= 0 && !e.altKey && !e.ctrlKey && !e.shiftKey) {
+    ui.win.smooth.push(h);
+    if (ui.win.smooth.length < 2) return renderPanel();
+    const [a, b] = ui.win.smooth;
+    ui.win.smooth = null;
+    const n = w.points.length;
+    // The points between, the shorter way round.
+    const fwd = (b - a + n) % n, back = (a - b + n) % n;
+    const [from, count] = fwd <= back ? [a, fwd - 1] : [b, back - 1];
+    if (count < 1) return renderPanel();
+    if (n - count < 3) return toast('A window needs at least three points.', 'bad');
+    const drop = new Set(Array.from({ length: count }, (_, k) => (from + 1 + k) % n));
+    const keep = (arr) => arr.filter((_, i) => !drop.has(i));
+    w.points = keep(w.points);
+    w.corners = keep(w.corners);
+    w.normals = keep(w.normals);
+    return saveEdited(w);
+  }
   if (h >= 0 && e.altKey) {
     if (w.points.length <= 3) return toast('A window needs at least three points.', 'bad');
     w.points.splice(h, 1);
@@ -4380,7 +4458,57 @@ const actions = {
     setPointer(ui.win.editing ? 'line' : 'look');
     renderAll();
   },
+  'win-smooth'() {
+    ui.win.smooth = ui.win.smooth ? null : [];
+    renderPanel();
+  },
+  async 'win-trace'() {
+    ui.win.draft = ui.win.editing = null;
+    ui.trace = { busy: true, found: [], chosen: new Set(), glass: 'inside' };
+    renderAll();
+    try {
+      const r = await call('trace', { opts: {} });
+      ui.trace = { busy: false, found: r.found, chosen: new Set(r.found.map((w, i) => (w.likely ? i : -1)).filter((i) => i >= 0)), glass: 'inside' };
+    } catch (e) {
+      ui.trace = { busy: false, found: [], chosen: new Set(), glass: 'inside', error: e.message };
+    }
+    renderAll();
+  },
+  'win-trace-cancel'() {
+    ui.trace = null;
+    renderAll();
+  },
+  async 'win-trace-add'() {
+    const t = ui.trace;
+    if (!t?.chosen.size) return;
+    const gs = glassSettings();
+    const added = [];
+    const edges = [];
+    for (const i of [...t.chosen].sort((x, y) => x - y)) {
+      const w = t.found[i];
+      let points = w.points, corners = w.corners;
+      // Glass on the outside over an opening: the outline the overlap larger.
+      if (w.kind === 'opening' && t.glass !== 'inside') {
+        points = await call('growOutline', { points: w.points, normal: w.normal, by: gs.overlap });
+        corners = w.corners.slice(0, points.length);
+      }
+      const name = traceName(w, i);
+      const light = /^(Headlight|Taillight)/.test(name);
+      const id = newId();
+      added.push({ id, name, points, corners, normals: points.map(() => w.normal), normal: w.normal, mirror: w.mirror, state: 'open', open: true, glass: t.glass, ...(light ? { lens: true } : {}) });
+      ui.traceDoubt[id] = w.doubt;
+      edges.push(...w.edge);
+    }
+    ui.traceEdges = [...(ui.traceEdges ?? []), ...edges];
+    ui.trace = null;
+    // The step keeps the glass settings it was built with.
+    const step = windowsStep();
+    if (step) commit(() => (step.params = { ...glassSettings(step), ...step.params }), false);
+    setWindows([...allWindows(), ...added]);
+    toast(`${added.length} window${added.length === 1 ? '' : 's'} added. Change any outline with its pencil.`);
+  },
   'win-done'() {
+    ui.win.smooth = null;
     ui.win.editing = null;
     setPointer('look');
     renderAll();
@@ -4709,6 +4837,16 @@ document.addEventListener('change', (e) => {
     return;
   }
   if (f === 'wg-glass') return setWindowGlass(e.target.dataset.win, { glass: e.target.value });
+  if (f === 'tr-pick' && ui.trace) {
+    const i = Number(e.target.dataset.i);
+    if (e.target.checked) ui.trace.chosen.add(i);
+    else ui.trace.chosen.delete(i);
+    return renderAll();
+  }
+  if (f === 'tr-glass' && ui.trace) {
+    ui.trace.glass = e.target.value;
+    return;
+  }
   if (f === 'wg-depth' || f === 'wg-thick') {
     const raw = e.target.value.trim();
     const v = fromUnits(Number(raw), project.units);

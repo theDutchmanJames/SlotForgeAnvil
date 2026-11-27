@@ -6,7 +6,9 @@ import { classifySkins, volume, wallThickness } from './shell.js';
 import { rayCaster } from './rays.js';
 import { findArches } from './chassis.js';
 import { makeBuck } from './buck.js';
-import { makeLenses, makeWindowBucks } from './lenses.js';
+import { makeLenses, makeWindowBucks, offsetOutline } from './lenses.js';
+import { traceWindows } from './trace.js';
+import { cutter } from './windows.js';
 import { glassFor, windowOutlines, windowState } from './windows.js';
 import { solidPreview } from './solid.js';
 import { symmetryReport } from './symmetry.js';
@@ -136,6 +138,32 @@ const methods = {
     };
     const bufs = (v) => [v.positions.buffer, v.indices.buffer];
     return { value, transfer: (v) => [...bufs(v), ...(v.windows ? [...bufs(v.windows.car), ...bufs(v.windows.print)] : [])] };
+  },
+  // Find the windows, on the body as it was before it was hollowed (Hollow
+  // keeps the outside as it is, and the model's own openings are clean
+  // there) and before anything is cut or fitted.
+  trace({ opts }) {
+    if (!source || !lastSteps) throw Error('No model is built yet.');
+    const at = lastSteps.findIndex((s) => ['floor', 'hollow', 'solid', 'windows', 'posts', 'lights', 'arches', 'guidecut', 'mounts', 'interior'].includes(s.type) && s.enabled);
+    const before = at < 0 ? current : replay(source, lastSteps.slice(0, at), cache, ctx).mesh;
+    return traceWindows(before, opts);
+  },
+  // A window outline made larger by `by` along the body (glass on the
+  // outside over an opening overlaps the body round it): moved out in the
+  // window's plane, then put back on the outside along its facing.
+  growOutline({ points, normal, by }) {
+    if (!current) throw Error('No model is built yet.');
+    const c = cutter(points, normal, 1);
+    const cast = rayCaster(body?.positions ?? current.positions, body?.indices ?? current.indices);
+    const out = offsetOutline(c.poly, by).map(([x, y]) => {
+      const s = c.at(x, y);
+      const p = [0, 1, 2].map((k) => x * c.u[k] + y * c.v[k] + s * c.d[k]);
+      const n = normal;
+      const start = p.map((q, k) => q + n[k] * 5);
+      const t = cast(start, n.map((q) => -q));
+      return (t < 15 ? start.map((q, k) => q - n[k] * t) : p).map((q) => Math.round(q * 1000) / 1000);
+    });
+    return out;
   },
   // Clear parts (printed, and bucks to vac-form the lights), from the body
   // before its windows are cut, for every open window not left out, each
