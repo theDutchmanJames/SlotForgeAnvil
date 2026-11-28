@@ -703,7 +703,7 @@ function panelScale(editing) {
   let body = '';
   if (s.mode === 'from')
     body = `<div class="f">The file is at<div class="row">1 : ${numField('scale-from', s.from, '')}<span class="muted">${s.from === guessScale(size[0]) ? 'guessed from its length' : '1 = real car size'}</span></div></div>
-      <div class="f">Make it<div class="row">1 : ${numField('scale-to', s.to, '')}<span class="seg"><button data-act="scale-to" data-v="32" class="${s.to === 32 ? 'on' : ''}">1:32</button><button data-act="scale-to" data-v="24" class="${s.to === 24 ? 'on' : ''}">1:24</button></span></div></div>`;
+      <div class="f">Make it<div class="row">1 : ${numField('scale-to', s.to, '')}<span class="seg">${[24, 32, 43].map((n) => `<button data-act="scale-to" data-v="${n}" class="${s.to === n ? 'on' : ''}">1:${n}</button>`).join('')}</span></div></div>`;
   else if (s.mode === 'length') {
     const d = s.dim ?? 0,
       name = SIZE_NAMES[d];
