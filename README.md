@@ -65,7 +65,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 
 ### Scale it
 
-- **From a scale to a scale:** Anvil guesses the file's scale from the car's length; make it **1/32 or 1/24**, or any scale you like.
+- **From a scale to a scale:** Anvil guesses the file's scale from the car's length; make it **1/24, 1/32 or 1/43**, or any scale you like.
 - **To a length, width or height, or by a factor:** type the width your chassis or class rules ask for, or measure a known distance on the car and set the scale from that.
 - **Millimetres or inches** throughout.
 
@@ -82,6 +82,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 - **A chassis that fits:** Anvil finds the wheel arches and suggests a chassis and tyres. Type over any number to match your own chassis, shown as a blue ghost inside the body.
 - **Clear warnings:** a line on the car says what does not fit (wheelbase, axle position, tyres sticking out or too tall) and fixes it with one click.
 - **Your chassis library:** save a chassis and pick it again for the next body, or share it as an `.anvilchassis` file. Load your printed chassis's own STL to see the real thing inside the body.
+- **Parts on the chassis:** add the parts that screw to your chassis, such as body posts or a motor bracket, from their own STL files. Anvil fits each one by its screw holes, turned and resting on the chassis where its holes meet the chassis's. Tick which are on: they show on the chassis, count in the clearance check (body mounts, which are meant to touch the body, are left out), and **Export chassis** saves the chassis with the ticked parts laid out beside it on one plate, ready to print. The parts go with the chassis into your library and into a shared `.anvilchassis` file.
 - **Stretch and arches:** lengthen, shorten or widen the body between the arches, and cut the arches round the tyres or flare them out.
 - **Tabs:** besides posts, hold the body on with tabs on the inside of the side walls: screw tabs (a flat tab with a screw hole at chassis height, with ribs) or clip tabs (a hook that snaps under the chassis edge). Click where they go; Mirror puts one on the other side.
 - **LED lights:** click on a headlight or taillight for an LED pocket: a bore through the wall where the light shines out (open, or a thin window for clear resin), with a socket inside that holds the LED straight. 1.8, 3 and 5 mm presets or your own size; on a solid body, a blind hole.

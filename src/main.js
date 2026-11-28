@@ -29,7 +29,8 @@ import { OPTIONAL_STEPS, variantFactor, variantSteps } from './variants.js';
 import { fitReport, suggestChassis } from './geometry/chassis.js';
 import { checkClearance, guideZone } from './geometry/clearance.js';
 import { flareBlows } from './geometry/arches.js';
-import { applyOrient, guessOrient } from './geometry/engine.js';
+import { applyOrient, applyOrientAt, guessOrient, orientShift } from './geometry/engine.js';
+import { fitPart, placePart, printLayout } from './geometry/chassisparts.js';
 import { readSTLMesh } from './geometry/stl-mesh.js';
 import { changeLibrary, library } from './library.js';
 import {
@@ -1597,38 +1598,91 @@ function drawGhost() {
 
 // The chassis STL turned like the car (front at low X, up Z), then put where
 // the user placed it: centred between the axles, standing on the track.
-let meshCache = { key: null, base: null, placed: null };
-function chassisMeshPlaced() {
-  const c = project.chassis,
-    m = project.chassisMesh;
-  if (!c?.stl || !m) return null;
+let meshCache = { bytes: null, base: null, orient: null, shift: null, placed: new Map() };
+function chassisBase() {
+  const m = project.chassisMesh;
+  if (!project.chassis?.stl || !m) return null;
   if (meshCache.bytes !== m.bytes) {
     try {
       const raw = readSTLMesh(m.bytes);
-      meshCache = { bytes: m.bytes, base: applyOrient(raw, guessOrient(raw)), key: null };
+      const orient = guessOrient(raw);
+      meshCache = { bytes: m.bytes, base: applyOrient(raw, orient), orient, shift: orientShift(raw, orient), placed: new Map() };
     } catch (e) {
       toast(`The chassis file could not be read: ${e.message}`, 'bad');
-      meshCache = { bytes: m.bytes, base: null, key: null };
+      meshCache = { bytes: m.bytes, base: null, placed: new Map() };
     }
   }
-  if (!meshCache.base) return null;
+  return meshCache.base;
+}
+
+// A part's own file, read once: raw (as drawn, for printing) and turned like
+// the chassis (for fitting), keyed by its file and the chassis's turn.
+const chassisPartCache = new Map();
+function chassisPartMesh(part) {
+  if (!chassisBase()) return null;
+  const key = `${part.stl.length}:${part.stl.slice(0, 64)}:${part.stl.slice(-64)}`;
+  let c = chassisPartCache.get(part.id);
+  if (c?.key !== key) {
+    try {
+      const raw = readSTLMesh(base64Bytes(part.stl).buffer);
+      c = { key, raw, turned: null, by: null };
+    } catch {
+      c = { key, raw: null };
+    }
+    chassisPartCache.set(part.id, c);
+  }
+  if (!c.raw) return null;
+  if (c.by !== meshCache.bytes) {
+    c.turned = applyOrientAt(c.raw, meshCache.orient, meshCache.shift);
+    c.by = meshCache.bytes;
+  }
+  return c;
+}
+const base64Bytes = (text) => Uint8Array.from(atob(text), (ch) => ch.charCodeAt(0));
+function bytesBase64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+// The parts that are on, fitted to the chassis (turned like the chassis).
+// clear: only those the body must clear (body mounts are meant to touch it).
+function fittedParts(clear = false) {
+  return (project.chassis?.parts ?? [])
+    .filter((p) => p.on !== false && p.fit && !(clear && p.mount))
+    .map((p) => chassisPartMesh(p)?.turned && placePart(chassisPartMesh(p).turned, p.fit))
+    .filter(Boolean);
+}
+
+// The chassis STL turned like the car (front at low X, up Z), with its parts
+// that are on, then put where the user placed it: centred between the axles,
+// standing on the track. clear: for the clearance check, body mounts left out.
+function chassisMeshPlaced(clear = false) {
+  const c = project.chassis;
+  const base = chassisBase();
+  if (!base) return null;
   const s = c.stl;
-  const key = JSON.stringify([s, c.frontX, c.wheelbase, groundZ()]);
-  if (meshCache.key === key) return meshCache.placed;
-  const src = meshCache.base.positions;
+  const key = JSON.stringify([s, c.frontX, c.wheelbase, groundZ(), (c.parts ?? []).map((p) => [p.id, p.on, p.mount, p.fit, p.stl.length]), clear]);
+  const hit = meshCache.placed.get(clear);
+  if (hit?.key === key) return hit.mesh;
+  const parts = fittedParts(clear);
+  const whole = parts.length ? joinMeshes([base, ...parts]) : base;
+  const src = whole.positions;
   const pos = new Float32Array(src.length);
   const cx = c.frontX + c.wheelbase / 2 + (s.along ?? 0),
     z0 = groundZ() + (s.height ?? 0.5);
+  const f = s.flip ? -1 : 1;
   for (let i = 0; i < src.length; i += 3) {
-    const f = s.flip ? -1 : 1;
     pos[i] = cx + src[i] * f;
     pos[i + 1] = src[i + 1] * f;
     pos[i + 2] = z0 + src[i + 2];
   }
-  meshCache.key = key;
-  meshCache.placed = { positions: pos, indices: meshCache.base.indices };
-  return meshCache.placed;
+  const mesh = { positions: pos, indices: whole.indices };
+  meshCache.placed.set(clear, { key, mesh });
+  return mesh;
 }
+// The key the clearance check keeps its result by.
+const chassisMeshKey = (clear) => meshCache.placed.get(clear)?.key ?? null;
 
 // Number fields of the chassis, as "path" → value in mm (typed in the current units).
 function setChassisField(path, raw) {
@@ -1730,13 +1784,44 @@ function panelChassis() {
       c.stl && project.chassisMesh
         ? `<div class="muted" style="font-weight:400;font-size:12px">${esc(c.stl.fileName)} · shown in the ghost. Put it where it sits on your car.</div>
       <div class="g2"><span class="fx">Move along${chField('stl.along', c.stl.along ?? 0)}</span><span class="fx">Height above the track${chField('stl.height', c.stl.height ?? 0.5)}</span></div>
-      <div class="row"><button class="btn sm ghost" data-act="stl-flip">Turn it around</button><button class="btn sm ghost danger" data-act="stl-remove">Remove STL</button></div>`
+      <div class="row"><button class="btn sm ghost" data-act="stl-flip">Turn it around</button><button class="btn sm ghost danger" data-act="stl-remove">Remove STL</button></div>
+      ${chassisPartsBox()}`
         : `<div class="muted" style="font-weight:400;font-size:12px">Load your chassis's own STL to see the real chassis inside the body. The tyre numbers above stay in charge of the fit.</div>
       <div class="row"><button class="btn sm ghost" data-act="stl-load">${icon('open')}Load chassis STL</button></div>`
     }</div>
     <div class="hr"></div>
     <div class="row"><button class="btn sm primary" data-act="lib-save">${icon('save')}${c.libId ? 'Update in library' : 'Save to library'}</button>${c.libId ? '<button class="btn sm ghost" data-act="lib-save-new">Save as new</button>' : ''}<button class="btn sm ghost" data-act="chassis-share">${icon('export')}Share as a file</button></div>
     ${libraryBox()}`;
+}
+
+// Parts screwed to the chassis (body posts, a motor bracket), kept with it.
+function chassisPartsBox() {
+  const c = project.chassis,
+    parts = c.parts ?? [];
+  const rows = parts
+    .map((p) => {
+      const fit = p.fit
+        ? `On ${p.fit.matched} of its ${p.fit.of} screw hole${p.fit.of === 1 ? '' : 's'}${p.fits > 1 ? ` · fit ${(p.fitNo ?? 0) + 1} of ${p.fits}` : ''}`
+        : 'Its screw holes match none of the chassis: not shown on it';
+      return `<div class="pair"><div class="ph"><label class="chk" style="margin:0"><input type="checkbox" data-act="cpart-on" data-v="${p.id}" ${p.on !== false ? 'checked' : ''}><b>${esc(p.name)}</b></label></div>
+        <span class="muted" style="font-size:11.5px">${fit}</span>
+        <span class="seg"><button data-act="cpart-mount" data-v="${p.id}:0" class="${p.mount ? '' : 'on'}" title="The body must clear it">Chassis part</button><button data-act="cpart-mount" data-v="${p.id}:1" class="${p.mount ? 'on' : ''}" title="Meets the body (body posts): left out of the clearance check">Body mount</button></span>
+        <div class="row">${p.fits > 1 ? `<button class="btn sm ghost" data-act="cpart-next" data-v="${p.id}">Other fit</button>` : ''}<button class="btn sm ghost danger" data-act="cpart-remove" data-v="${p.id}">Remove</button></div></div>`;
+    })
+    .join('');
+  const on = parts.filter((p) => p.on !== false).length;
+  return `<div class="hr"></div><div class="f">Parts on the chassis<div class="muted" style="font-weight:400;font-size:12px">Body posts, a motor bracket: parts that screw to this chassis. Anvil fits each one by its screw holes. Ticked parts are shown on the chassis and printed with it.</div></div>
+    ${rows}
+    <div class="row"><button class="btn sm ghost" data-act="cpart-add">${icon('plus')}Add parts</button><button class="btn sm" data-act="chassis-export">${icon('export')}Export chassis${on ? ` + ${on} part${on === 1 ? '' : 's'}` : ''}</button></div>`;
+}
+
+// Fits a part to the chassis by its holes; fitNo picks among equal fits.
+function fitChassisPart(part, fitNo = 0) {
+  const m = chassisPartMesh(part);
+  if (!m?.turned) return { ...part, fit: null, fits: 0, fitNo: 0 };
+  const { fits } = fitPart(chassisBase(), m.turned);
+  const n = fits.length ? fitNo % fits.length : 0;
+  return { ...part, fit: fits[n] ?? null, fits: fits.length, fitNo: n };
 }
 
 function panelTyres() {
@@ -1830,9 +1915,10 @@ let clearCache = { key: null, value: null };
 function clearanceNow() {
   const c = project?.chassis;
   if (!c || !result) return { faces: null, parts: [] };
-  const mesh = chassisMeshPlaced();
+  // Body mounts on the chassis are meant to touch the body: left out.
+  const mesh = chassisMeshPlaced(true);
   const posts = postsStep()?.enabled ? postsStep().params : null;
-  const key = JSON.stringify([buildToken, c, groundZ(), mesh ? meshCache.key : null, posts?.posts, posts?.type?.outer, tabsStep()?.params.tabs]);
+  const key = JSON.stringify([buildToken, { ...c, parts: undefined }, groundZ(), mesh ? chassisMeshKey(true) : null, posts?.posts, posts?.type?.outer, tabsStep()?.params.tabs]);
   if (clearCache.key === key) return clearCache.value;
   // Where a post meets the chassis is meant to touch: leave those spots out.
   const reach = posts ? (posts.type?.outer ?? 3) / 2 + (posts.type?.fillet ?? 0) + 0.5 : 0;
@@ -4285,9 +4371,37 @@ const actions = {
   'stl-flip'() {
     commit(() => (project.chassis = { ...project.chassis, stl: { ...project.chassis.stl, flip: !project.chassis.stl.flip } }), false);
   },
+  'cpart-add'() {
+    $('#chassis-part-file').click();
+  },
+  'cpart-on'(id) {
+    commit(() => (project.chassis = { ...project.chassis, parts: project.chassis.parts.map((p) => (p.id === id ? { ...p, on: p.on === false } : p)) }), false);
+  },
+  'cpart-mount'(v) {
+    const [id, m] = v.split(':');
+    commit(() => (project.chassis = { ...project.chassis, parts: project.chassis.parts.map((p) => (p.id === id ? { ...p, mount: m === '1' } : p)) }), false);
+  },
+  'cpart-next'(id) {
+    commit(() => (project.chassis = { ...project.chassis, parts: project.chassis.parts.map((p) => (p.id === id ? fitChassisPart(p, (p.fitNo ?? 0) + 1) : p)) }), false);
+  },
+  'cpart-remove'(id) {
+    commit(() => (project.chassis = { ...project.chassis, parts: project.chassis.parts.filter((p) => p.id !== id) }), false);
+  },
+  'chassis-export'() {
+    const c = project.chassis;
+    if (!c?.stl || !project.chassisMesh) return;
+    try {
+      const parts = (c.parts ?? []).filter((p) => p.on !== false).map((p) => chassisPartMesh(p)?.raw).filter(Boolean);
+      const mesh = joinMeshes(printLayout(readSTLMesh(project.chassisMesh.bytes), parts));
+      download(`${c.name.replace(/[\\/:*?"<>|]+/g, '-')}${parts.length ? ' with parts' : ''}.stl`, encodeSTL(mesh), 'model/stl');
+      toast(parts.length ? `Chassis exported with ${parts.length} part${parts.length === 1 ? '' : 's'} beside it, ready to print.` : 'Chassis exported.');
+    } catch (e) {
+      toast(`The chassis could not be exported: ${e.message}`, 'bad');
+    }
+  },
   'stl-remove'() {
     commit(() => {
-      const { stl, ...rest } = project.chassis;
+      const { stl, parts, ...rest } = project.chassis;
       project.chassis = rest;
       project.chassisMesh = null;
     }, false);
@@ -5203,6 +5317,8 @@ $('#chassis-stl').addEventListener('change', async (e) => {
       if (!project.chassis) project.chassis = suggestChassis(lookups.arches.value);
       project.chassis = { ...project.chassis, stl: { fileName: file.name, flip: false, along: 0, height: 0.5 } };
       project.chassisMesh = { fileName: file.name, bytes };
+      // Parts kept from before are fitted to this chassis afresh.
+      if (project.chassis.parts?.length) project.chassis = { ...project.chassis, parts: project.chassis.parts.map((p) => fitChassisPart(p)) };
     }, false);
     ui.look.chassis = true;
     drawGhost();
@@ -5210,6 +5326,32 @@ $('#chassis-stl').addEventListener('change', async (e) => {
   } catch (err) {
     toast(`That chassis file could not be read: ${err.message}`, 'bad');
   }
+});
+
+$('#chassis-part-file').addEventListener('change', async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (!files.length || !chassisBase()) return;
+  const added = [];
+  for (const file of files) {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      readSTLMesh(bytes.buffer); // refuse a broken file before keeping it
+      const name = file.name.replace(/\.stl$/i, '');
+      added.push(fitChassisPart({ id: newId(), name, fileName: file.name, stl: bytesBase64(bytes), on: true, mount: /post|pillar|mount|body/i.test(name) }));
+    } catch (err) {
+      toast(`${file.name} could not be read: ${err.message}`, 'bad');
+    }
+  }
+  if (!added.length) return;
+  commit(() => (project.chassis = { ...project.chassis, parts: [...(project.chassis.parts ?? []), ...added] }), false);
+  const loose = added.filter((p) => !p.fit).length;
+  toast(
+    loose
+      ? `${added.length - loose} of ${added.length} fitted by their screw holes. ${loose === 1 ? 'One matches' : `${loose} match`} none of the chassis's holes.`
+      : `${added.length === 1 ? 'Fitted by its' : `All ${added.length} fitted by their`} screw holes.`,
+    loose ? 'bad' : undefined,
+  );
 });
 
 $('#name').addEventListener('change', (e) => {

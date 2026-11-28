@@ -119,22 +119,17 @@ export function matrixAngles(R) {
 }
 const mul = (A, B) => A.map((row) => [0, 1, 2].map((j) => row[0] * B[0][j] + row[1] * B[1][j] + row[2] * B[2][j]));
 
-export function applyOrient(mesh, { front, up, turn = 0, tilt = 0, lean = 0, mirror = false }) {
-  for (const [name, v] of [['turn', turn], ['tilt', tilt], ['lean', lean]])
-    if (!Number.isFinite(v) || Math.abs(v) > 180) throw Error(`Enter a ${name} between -180 and 180 degrees.`);
-  const [r1, r2, r3] = mul(angleMatrix(turn, tilt, lean), orientMatrix(front, up));
-  const flip = mirror ? -1 : 1;
-  const p = mesh.positions,
-    out = new Float32Array(p.length);
-  for (let i = 0; i < p.length; i += 3) {
-    const x = p[i], y = p[i + 1], z = p[i + 2];
-    out[i] = r1[0] * x + r1[1] * y + r1[2] * z;
-    out[i + 1] = flip * (r2[0] * x + r2[1] * y + r2[2] * z);
-    out[i + 2] = r3[0] * x + r3[1] * y + r3[2] * z;
-  }
+export function applyOrient(mesh, o) {
+  return applyOrientAt(mesh, o, null);
+}
+
+// at: the shift to use instead of centring this mesh, so a second mesh (a
+// part screwed to a chassis) can be turned and moved exactly like the first.
+export function applyOrientAt(mesh, o, at) {
+  const { mirror = false } = o;
+  const out = turnOrient(mesh.positions, o);
   // Stand the car on Z = 0, centred on X and Y.
-  const { min, max } = bounds(out);
-  const shift = [-(min[0] + max[0]) / 2, -(min[1] + max[1]) / 2, -min[2]];
+  const shift = at ?? centreShift(out);
   for (let i = 0; i < out.length; i += 3)
     for (let k = 0; k < 3; k++) out[i + k] += shift[k];
   if (!mirror) return { positions: out, indices: mesh.indices };
@@ -142,6 +137,31 @@ export function applyOrient(mesh, { front, up, turn = 0, tilt = 0, lean = 0, mir
   const idx = Uint32Array.from(mesh.indices);
   for (let f = 0; f < idx.length; f += 3) [idx[f + 1], idx[f + 2]] = [idx[f + 2], idx[f + 1]];
   return { positions: out, indices: idx };
+}
+
+// The shift applyOrient gives this mesh (to pass to it for another mesh).
+export function orientShift(mesh, o) {
+  return centreShift(turnOrient(mesh.positions, o));
+}
+
+function centreShift(p) {
+  const { min, max } = bounds(p);
+  return [-(min[0] + max[0]) / 2, -(min[1] + max[1]) / 2, -min[2]];
+}
+
+function turnOrient(p, { front, up, turn = 0, tilt = 0, lean = 0, mirror = false }) {
+  for (const [name, v] of [['turn', turn], ['tilt', tilt], ['lean', lean]])
+    if (!Number.isFinite(v) || Math.abs(v) > 180) throw Error(`Enter a ${name} between -180 and 180 degrees.`);
+  const [r1, r2, r3] = mul(angleMatrix(turn, tilt, lean), orientMatrix(front, up));
+  const flip = mirror ? -1 : 1;
+  const out = new Float32Array(p.length);
+  for (let i = 0; i < p.length; i += 3) {
+    const x = p[i], y = p[i + 1], z = p[i + 2];
+    out[i] = r1[0] * x + r1[1] * y + r1[2] * z;
+    out[i + 1] = flip * (r2[0] * x + r2[1] * y + r2[2] * z);
+    out[i + 2] = r3[0] * x + r3[1] * y + r3[2] * z;
+  }
+  return out;
 }
 
 // The turn, tilt and lean that square up a car already pointing roughly the
