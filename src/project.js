@@ -10,10 +10,12 @@ export const FORMAT = 'slotforge-anvil-project';
 // skip without a word; version 4 adds Smooth scan; version 5 adds where a
 // window's glass sits (outside, set in, set back, its own thickness);
 // version 6 adds Hollow's Clean out the inside.
-export const VERSION = 6;
+export const VERSION = 7;
 const glassUsed = (s) => s.type === 'windows' && (s.params.windows ?? []).some((w) => (w.glass && w.glass !== 'inside') || w.depth > 0 || w.thick > 0);
 export const fileVersion = (p) =>
-  p.steps.some((s) => s.type === 'hollow' && s.params.clean)
+  p.steps.some((s) => s.type === 'tape')
+    ? 7
+    : p.steps.some((s) => s.type === 'hollow' && s.params.clean)
     ? 6
     : p.steps.some(glassUsed)
     ? 5
@@ -77,6 +79,7 @@ export const STEP_NAMES = {
   windows: 'Windows',
   smooth: 'Smooth',
   addpart: 'Add part',
+  tape: 'Masking tape',
   repair: 'Light fix',
   fill: 'Close openings',
   solid: 'Make solid',

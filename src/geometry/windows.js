@@ -15,6 +15,7 @@ import { mirrorPoint, sampleClosedCurve } from './curve.js';
 import { applyText, refine } from './detail.js';
 import { fillLoop } from './fill.js';
 import { boundaryLoops, joinMeshes, pairEdges, partsOf } from './topology.js';
+import { keepTaped } from './tape.js';
 
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -368,7 +369,7 @@ function sinkAll(m, list) {
 //           outside overlaps the body round the opening (see glassFor)
 //   minWall: the thinnest wall left behind a rebate
 // fine: see clip (on for windows drawn now, off for those saved before).
-export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane = 1, recess = 0.3, ...rest }) {
+export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane = 1, recess = 0.3, ...rest }, { tape } = {}) {
   const gp = { ...GLASS_DEFAULTS, ...rest };
   let m = mesh;
   const report = [];
@@ -453,7 +454,7 @@ export function applyWindows(mesh, { windows = [], depth = 3, fine = false, pane
     const reach = g.rebate ? Math.max(depth, g.thick + g.depth + gp.minWall + 1.5) : depth;
     const c = cutter(points, o.normal, reach);
     const cut = onPatch(m, { ...o, points }, 2, c.lo - 2, c.hi + 2, (patch) => {
-      const r = patch ? clip(patch, c.f, fine, false) : { removed: 0 };
+      const r = patch ? clip(patch, keepTaped(c.f, tape), fine, false) : { removed: 0 };
       return { mesh: r, removed: r.removed };
     });
     const out = cut.result.removed ? cut.mesh : { removed: 0 };

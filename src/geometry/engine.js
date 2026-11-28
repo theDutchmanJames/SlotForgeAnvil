@@ -29,6 +29,7 @@ import { applyInterior } from './interior.js';
 import { applyLights } from './lights.js';
 import { applySymmetrize } from './symmetry.js';
 import { applyBodyShape } from './bodyshape.js';
+import { holdTaped, tapedFaces } from './tape.js';
 
 export const AXES = ['+x', '-x', '+y', '-y', '+z', '-z'];
 const unitOf = (axis) => {
@@ -471,7 +472,7 @@ function sliceOne(mesh, plane, at, keep) {
 
 // Delete triangles. patch: 'smooth' closes the openings this leaves with a
 // patch that bends with its rim (openings that were there before stay open).
-export function applyDelete(mesh, { faces, patch = 'open' }) {
+export function applyDelete(mesh, { faces, patch = 'open' }, { tape } = {}) {
   const count = mesh.indices.length / 3;
   const drop = new Uint8Array(count);
   for (let i = 0; i < faces.length; i += 2) {
@@ -479,6 +480,8 @@ export function applyDelete(mesh, { faces, patch = 'open' }) {
       throw Error('This step no longer matches the model, because an earlier step changed it.');
     drop.fill(1, faces[i], faces[i] + faces[i + 1]);
   }
+  // Faces under masking tape stay.
+  if (tape?.length) for (const f of tapedFaces(mesh, tape)) drop[f] = 0;
   const keep = [];
   const touched = new Uint8Array(mesh.positions.length / 3);
   for (let f = 0; f < count; f++)
@@ -536,14 +539,20 @@ const OPS = {
   windows: applyWindows,
   smooth: applySmooth,
   addpart: applyAddPart,
+  // Masking tape changes nothing itself: the steps after it see it (see replay).
+  tape: (mesh, { spots = [] }) => ({ positions: mesh.positions, indices: mesh.indices, info: { spots: spots.length } }),
 };
 const SHAPES_ONLY = new Set(['orient', 'scale']);
+// Steps that keep what lies under masking tape: these cut and are given the
+// tape (ctx.tape); these move the surface, and the taped corners are held.
+const TAPE_CUTS = new Set(['windows', 'arches', 'guidecut', 'lights', 'hollow', 'delete']);
+const TAPE_HOLDS = new Set(['smooth', 'scansmooth', 'hammer']);
 
 // cache (optional): a Map kept between calls. Steps are only redone from the
 // first one that changed, so a slow step (reduce, repair) is not repeated
 // when a later step is edited.
 // ctx: what some steps need besides their own numbers (ctx.parts: the files
-// of added parts, by id).
+// of added parts, by id; ctx.tape: the masking tape, for the steps that keep it).
 export function replay(source, steps, cache = null, ctx = {}) {
   let mesh = source,
     original = source;
@@ -564,6 +573,13 @@ export function replay(source, steps, cache = null, ctx = {}) {
       break;
     }
   }
+  // The masking tape each step sees: every spot of the Tape steps before it.
+  const tapes = [];
+  let tape = [];
+  for (const step of steps) {
+    tapes.push(tape);
+    if (step.enabled && step.type === 'tape') tape = [...tape, ...(step.params.spots ?? [])];
+  }
   for (let i = start; i < steps.length; i++) {
     const step = steps[i];
     if (!step.enabled) results.push({ id: step.id, state: 'off' });
@@ -571,10 +587,12 @@ export function replay(source, steps, cache = null, ctx = {}) {
       const op = OPS[step.type];
       try {
         if (!op) throw Error('Unknown step.');
-        const next = op(mesh, step.params, ctx);
+        const taped = tapes[i].length && (TAPE_CUTS.has(step.type) || TAPE_HOLDS.has(step.type)) ? tapes[i] : null;
+        let next = op(mesh, step.params, taped ? { ...ctx, tape: taped } : ctx);
+        if (taped && TAPE_HOLDS.has(step.type)) next = { ...holdTaped(mesh, next, taped).mesh, info: next.info };
         mesh = { positions: next.positions, indices: next.indices };
         if (SHAPES_ONLY.has(step.type)) original = op(original, step.params);
-        results.push({ id: step.id, state: 'ok', info: next.info });
+        results.push({ id: step.id, state: 'ok', info: taped ? { ...next.info, taped: taped.length } : next.info });
       } catch (e) {
         results.push({ id: step.id, state: 'error', error: e.message });
       }

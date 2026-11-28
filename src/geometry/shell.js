@@ -162,7 +162,7 @@ export function thicknessAt(p, opts, zmin, zmax) {
   return t;
 }
 
-export function applyHollow(mesh, opts) {
+export function applyHollow(mesh, opts, { tape } = {}) {
   const o = { wall: 1, top: null, strokes: [], ...opts };
   if (!(o.wall > 0)) throw Error('Enter a wall thickness above 0.');
   const info = {};
@@ -170,7 +170,7 @@ export function applyHollow(mesh, opts) {
   // all below the shrunk car, so the shell is empty and open underneath.
   if (o.clean) {
     const thickest = Math.max(o.wall, Number.isFinite(o.top) ? o.top : 0, ...(o.strokes ?? []).map((s) => s.wall ?? 0));
-    const c = cleanOut(mesh, { wall: thickest });
+    const c = cleanOut(mesh, { wall: thickest, tape });
     mesh = c.mesh;
     info.cleaned = c.info.removed;
   }

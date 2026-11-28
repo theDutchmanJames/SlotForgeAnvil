@@ -358,6 +358,7 @@ export class Viewport {
   paintSelection(mask, sel = [0.93, 0.36, 0.38]) {
     if (!this.geometry) return;
     this.lastMask = mask;
+    this.lastSel = sel;
     const color = this.geometry.attributes.color;
     const arr = color.array;
     const base = this.base;
@@ -405,7 +406,7 @@ export class Viewport {
         }
       this.bodyMaterial.color.set(0xffffff);
     }
-    this.paintSelection(this.lastMask);
+    this.paintSelection(this.lastMask, this.lastSel);
   }
 
   // ------------------------------------------------------------ picking

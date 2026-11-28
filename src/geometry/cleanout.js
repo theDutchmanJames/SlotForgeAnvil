@@ -16,10 +16,11 @@ import { clip } from './arches.js';
 import { bounds } from './bounds.js';
 import { rayCaster } from './rays.js';
 import { pairEdges, partsOf } from './topology.js';
+import { keepTaped } from './tape.js';
 
 // opts: { wall (the thickest wall the body gets), cell (grid size; from the
 // body's size when left out) }. Returns { mesh, info: { removed, cell } }.
-export function cleanOut(mesh, { wall, cell = null }) {
+export function cleanOut(mesh, { wall, cell = null, tape = null }) {
   if (!(wall > 0)) throw Error('Enter a wall thickness above 0.');
   const P = mesh.positions, T = mesh.indices;
   const b = bounds(P);
@@ -231,7 +232,7 @@ export function cleanOut(mesh, { wall, cell = null }) {
   };
   // Every corner kept at its own number (the new ones after), so each
   // piece left can tell which part of the model it came from.
-  const cut = clip(mesh, f, false, false);
+  const cut = clip(mesh, keepTaped(f, tape), false, false);
   const V0 = P.length / 3;
   // Bits left floating once their surroundings went: a piece cut off the
   // body itself (a scrap of a sill, a flare's lip) goes; parts the model

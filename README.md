@@ -74,6 +74,7 @@ Anvil works along eight menus, roughly in the order you build a body: **Repair, 
 - **Floor line:** cut the underside open at a height, or squish the lower body up onto the line so sills and valances keep their shape. On a body that is already a hollow shell, the wall is closed along the cut, so it prints solid between its skins; the same goes for Slice and Wheel arches.
 - **Hollow:** an even wall built inwards from the outside, which does not move. **Clean out the inside** (on for new steps) first takes away everything that is not the outside: the car is shrunk by the wall, and all inside it and straight below it goes, so seats, a dashboard, an old inner wall, closed wheel arches and a floor go and you get an empty shell, open underneath. Parts thinner than two walls (a wing, a mirror) stay solid. **Lighten the top** thins the wall from the sills up to the roof.
 - **Paint thickness:** paint thinner or thicker spots on the wall.
+- **Masking tape:** tape over a part the tools must leave alone, such as a mirror by a window, a spoiler or a fin (Shape › Masking tape). Window cuts, wheel arches, guide room, LED bores, Clean out and Delete keep what is taped; Smooth, Smooth scan and Hammer leave it as it is. Peel tape off again whenever you like. Projects with tape save as format 7.
 - **Hammer:** hammer panels out or in like a real body panel, hold areas with a dolly, and planish out the marks. The wall is rebuilt evenly behind it.
 - **Resin or FDM:** choose how you print, with the material and nozzle; the walls and the weight estimate follow.
 

@@ -6,6 +6,7 @@ import { bounds } from './bounds.js';
 import { capLoops } from './finish.js';
 import { rayCaster } from './rays.js';
 import { boundaryLoops, pairEdges } from './topology.js';
+import { keepTaped } from './tape.js';
 
 // ------------------------------------------------------------ stretch
 
@@ -58,14 +59,14 @@ function blend(s) {
 // radius r), keeping the rest. Where the cut goes through a shell's wall, the
 // wall is closed along the cut so it stays solid between its skins; a solid
 // body's cut stays open for Hollow, which closes it with the new wall.
-export function applyArchCut(mesh, { cuts, closeWalls = true, fine = false }) {
+export function applyArchCut(mesh, { cuts, closeWalls = true, fine = false }, { tape } = {}) {
   let m = mesh;
   let removed = 0,
     walls = 0;
   for (const c of cuts ?? []) {
     if (!(c.r > 0) || !Number.isFinite(c.x) || !Number.isFinite(c.z)) throw Error('An arch cut is damaged. Remove the step and cut again.');
     const inside = (x, z) => c.r * c.r - ((x - c.x) ** 2 + (z - c.z) ** 2); // > 0 inside
-    const out = clip(m, (p) => inside(p[0], p[2]), fine); // keep where inside <= 0: outside the circle
+    const out = clip(m, keepTaped((p) => inside(p[0], p[2]), tape), fine); // keep where inside <= 0: outside the circle (and under tape)
     removed += out.removed;
     m = out;
     if (closeWalls && out.removed) {
@@ -118,9 +119,9 @@ function closeCylinderCut(mesh, c) {
 // Room for the guide: remove the body inside a round zone round the guide
 // post (x, y), from below up to `top`. Where that cuts a shell's wall, the
 // wall is closed along the cut.
-export function applyGuideCut(mesh, { x, y = 0, r, top, closeWalls = true }) {
+export function applyGuideCut(mesh, { x, y = 0, r, top, closeWalls = true }, { tape } = {}) {
   if (!(r > 0) || !Number.isFinite(x) || !Number.isFinite(top)) throw Error('The guide cut is damaged. Remove the step and cut again.');
-  const out = clip(mesh, (p) => Math.min(r - Math.hypot(p[0] - x, p[1] - y), top - p[2]));
+  const out = clip(mesh, keepTaped((p) => Math.min(r - Math.hypot(p[0] - x, p[1] - y), top - p[2]), tape));
   if (!out.removed) return { positions: mesh.positions, indices: mesh.indices, info: { removed: 0, walls: 0 } };
   let m = out,
     walls = 0;

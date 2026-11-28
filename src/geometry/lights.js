@@ -9,6 +9,7 @@ import { clip } from './arches.js';
 import { capLoops } from './finish.js';
 import { rayCaster } from './rays.js';
 import { boundaryLoops, pairEdges } from './topology.js';
+import { keepTaped } from './tape.js';
 
 export const LED_SIZES = {
   led18: { name: '1.8 mm round', d: 1.8, length: 3.5 },
@@ -63,7 +64,7 @@ function tube(fr, r0, r1, t0, t1, n = 28) {
 }
 
 // lights: [{ at, normal, d, length, clearance, tube, mode, skin }].
-export function applyLights(mesh, { lights = [] }) {
+export function applyLights(mesh, { lights = [] }, { tape } = {}) {
   let m = mesh;
   const tubes = [];
   const warnings = [];
@@ -99,10 +100,13 @@ export function applyLights(mesh, { lights = [] }) {
     };
     // Where the bore starts: past the outside when open, under the skin for a window.
     const tStart = l.mode === 'window' ? skinAt + l.skin : skinAt - 1;
-    const out = clip(m, (p) => {
-      const q = local(p);
-      return Math.min(r - Math.hypot(q[0], q[1]), q[2] - tStart, t1 - q[2]);
-    });
+    const out = clip(
+      m,
+      keepTaped((p) => {
+        const q = local(p);
+        return Math.min(r - Math.hypot(q[0], q[1]), q[2] - tStart, t1 - q[2]);
+      }, tape),
+    );
     if (!out.removed) {
       warnings.push(`Light ${i + 1}: nothing to cut there.`);
       return;

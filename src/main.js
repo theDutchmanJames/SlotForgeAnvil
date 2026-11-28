@@ -61,6 +61,7 @@ import { mirrorPoint, sampleClosedCurve } from './geometry/curve.js';
 import { BUCK_DEFAULTS } from './geometry/buck.js';
 import { LENS_DEFAULTS } from './geometry/lenses.js';
 import { joinMeshes } from './geometry/topology.js';
+import { tapedCorners } from './geometry/tape.js';
 import {
   DEFAULT_PRINT,
   MATERIALS,
@@ -425,7 +426,7 @@ const MENUS = [
   {
     id: 'shape',
     name: 'Shape',
-    tools: [['bodyshape', 'stretch', 'Body shaping'], ['featurelayout', 'move', 'Feature layout'], ['slice', 'slice', 'Slice'], ['cutoff', 'cutoff', 'Cut off'], ['select', 'trash', 'Delete selection'], ['smooth', 'smooth', 'Smooth'], ['panellines', 'detail', 'Panel lines'], ['text', 'text', 'Text'], ['addpart', 'plus', 'Add part']],
+    tools: [['bodyshape', 'stretch', 'Body shaping'], ['featurelayout', 'move', 'Feature layout'], ['slice', 'slice', 'Slice'], ['cutoff', 'cutoff', 'Cut off'], ['select', 'trash', 'Delete selection'], ['tape', 'tape', 'Masking tape'], ['smooth', 'smooth', 'Smooth'], ['panellines', 'detail', 'Panel lines'], ['text', 'text', 'Text'], ['addpart', 'plus', 'Add part']],
   },
   {
     id: 'windows',
@@ -629,6 +630,7 @@ function renderPanel() {
     buck: panelBuck,
     lenses: panelLenses,
     smooth: panelSmooth,
+    tape: panelTape,
     addpart: panelAddPart,
     final: panelFinal,
   }[panel](editing);
@@ -983,7 +985,7 @@ function panelStepInfo(editing) {
 
 // ------------------------------------------------------------ repair panels
 
-const STEP_PANEL = { bodyshape: 'bodyshape', orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', solid: 'solid', rebuild: 'rebuild', symmetrize: 'symmetry', panellines: 'panellines', text: 'text', interior: 'interior', lights: 'lights', reduce: 'reduce', scansmooth: 'scansmooth', guidecut: 'clearance', mounts: 'tabs', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart' };
+const STEP_PANEL = { bodyshape: 'bodyshape', orient: 'orient', scale: 'scale', slice: 'slice', cutoff: 'cutoff', delete: 'stepinfo', repair: 'fix', fill: 'openings', solid: 'solid', rebuild: 'rebuild', symmetrize: 'symmetry', panellines: 'panellines', text: 'text', interior: 'interior', lights: 'lights', reduce: 'reduce', scansmooth: 'scansmooth', guidecut: 'clearance', mounts: 'tabs', floor: 'floor', hollow: 'hollow', hammer: 'hammer', stretch: 'stretch', arches: 'arches', posts: 'posts', windows: 'windows', smooth: 'smooth', addpart: 'addpart', tape: 'tape' };
 const STEP_MENU = { bodyshape: 'shape', windows: 'windows', smooth: 'shape', addpart: 'shape', orient: 'scale', scale: 'scale', slice: 'shape', cutoff: 'shape', delete: 'shape', repair: 'repair', fill: 'repair', solid: 'repair', rebuild: 'repair', symmetrize: 'repair', panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', reduce: 'repair', scansmooth: 'repair', floor: 'shell', hollow: 'shell', hammer: 'shell', stretch: 'chassis', arches: 'chassis', guidecut: 'chassis', mounts: 'posts', posts: 'posts' };
 
 // Results the worker works out on request, kept until the shape changes.
@@ -3291,6 +3293,77 @@ function smoothAt(e, hit = viewport.pick(e)) {
   viewport.marker(hit.point, 0x3b9cff);
 }
 
+// ------------------------------------------------------------ masking tape
+
+// The steps that leave what is taped alone (see TAPE_CUTS and TAPE_HOLDS in engine.js).
+const TAPE_AWARE = ['windows', 'arches', 'guidecut', 'lights', 'hollow', 'delete', 'smooth', 'scansmooth', 'hammer'];
+function tapeOptions() {
+  ui.tape ??= { mode: 'tape', radius: round(Math.hypot(...result.stats.bounds.size) * 0.02, 1) };
+  return ui.tape;
+}
+const tapeStep = () => project.steps.find((s) => s.type === 'tape' && s.enabled) ?? null;
+
+function tapeAt(e, hit = viewport.pick(e)) {
+  if (!hit || !drag) return;
+  const r = tapeOptions().radius;
+  const at = hit.point.toArray().map((x) => round(x, 3));
+  const last = drag.spots.at(-1);
+  if (last && Math.hypot(...last.at.map((x, k) => x - at[k])) < r * 0.4) return;
+  drag.spots.push({ at, r });
+  if (project.mirror && Math.abs(at[1]) > r * 0.25) drag.spots.push({ at: [at[0], -at[1], at[2]], r });
+  viewport.marker(hit.point, drag.peel ? 0xe5484d : 0xe9c46a);
+}
+
+// New tape goes into the Tape step, made if there is none: just before the
+// first step that cuts or smooths, so every one of those keeps it.
+function addTape(spots) {
+  commit(() => {
+    const step = tapeStep();
+    if (step) return (step.params = { ...step.params, spots: [...(step.params.spots ?? []), ...spots] });
+    const at = project.steps.findIndex((s) => s.enabled && TAPE_AWARE.includes(s.type));
+    const fresh = { id: newId(), type: 'tape', enabled: true, params: { spots } };
+    if (at < 0) project.steps.push(fresh);
+    else project.steps.splice(at, 0, fresh);
+  });
+}
+
+// Peeling: tape spots the brush passed over come off.
+function peelTape(points) {
+  const step = tapeStep();
+  if (!step) return;
+  const keep = (step.params.spots ?? []).filter((t) => !points.some((p) => Math.hypot(...t.at.map((x, k) => x - p.at[k])) < p.r + t.r * 0.5));
+  if (keep.length === step.params.spots.length) return;
+  commit(() => (step.params = { ...step.params, spots: keep }));
+}
+
+// The faces under the tape on the body as it is now, to show in the colour of tape.
+function tapePreview() {
+  const spots = tapeStep()?.params.spots ?? [];
+  if (!spots.length) return null;
+  const under = tapedCorners(result.positions, spots);
+  const faces = new Uint8Array(result.indices.length / 3);
+  for (let f = 0; f < faces.length; f++) if (under[result.indices[f * 3]] || under[result.indices[f * 3 + 1]] || under[result.indices[f * 3 + 2]]) faces[f] = 1;
+  return { faces, color: [0.91, 0.76, 0.42] };
+}
+
+function panelTape(editing) {
+  const o = tapeOptions(),
+    u = project.units;
+  const step = editing ?? tapeStep();
+  const n = step?.params.spots?.length ?? 0;
+  const at = step ? project.steps.indexOf(step) : -1;
+  // Steps that cut or smooth but come before the tape: they do not keep it.
+  const before = at < 0 ? [] : project.steps.slice(0, at).filter((s) => s.enabled && TAPE_AWARE.includes(s.type));
+  const diag = Math.hypot(...result.stats.bounds.size);
+  return `${head('Masking tape', 'Tape over parts the tools must leave alone, such as a mirror by a window, a spoiler or a fin. Window cuts, wheel arches, guide room, LED bores, Clean out and Delete keep what is taped. Smooth, Smooth scan and Hammer leave it as it is.')}
+    <span class="seg"><button data-act="tape-mode" data-v="tape" class="${o.mode === 'tape' ? 'on' : ''}">Tape</button><button data-act="tape-mode" data-v="peel" class="${o.mode === 'peel' ? 'on' : ''}" title="Or hold Alt while taping">Peel off</button></span>
+    <div class="f">Tape width<div class="row"><input type="range" data-field="tape-radius" min="0.5" max="${round(diag * 0.1, 0)}" step="0.5" value="${o.radius}"><span class="mono" id="tape-radius-val">${fmtLen(o.radius * 2, u, 1)}</span></div></div>
+    <div class="muted" style="font-size:12px">Paint over the part with the left mouse button. A part already cut away comes back when you tape where it was: the steps are done again with the tape on.${project.mirror ? ' Mirror is on: the other side gets taped too.' : ''}</div>
+    <div class="row"><span class="muted" style="font-size:12px">${n} taped spot${n === 1 ? '' : 's'}</span>${n ? '<button class="btn sm ghost" data-act="tape-clear">Peel it all off</button>' : ''}</div>
+    ${before.length ? `<div class="note warn">${before.map((s) => esc(stepName(s))).join(', ')} ${before.length === 1 ? 'comes' : 'come'} before the tape, so ${before.length === 1 ? 'it does' : 'they do'} not keep it.<button class="btn sm" data-act="tape-first">Put the tape first</button></div>` : ''}
+    ${ui.pointer === 'tape' ? '<button class="btn sm" data-act="pointer" data-v="look">Done taping</button>' : `<button class="btn primary sm" data-act="pointer" data-v="tape">${icon('tape')}Start taping</button>`}`;
+}
+
 function panelSmooth(editing) {
   const o = smoothOptions(),
     u = project.units;
@@ -3502,9 +3575,19 @@ function panelFinal() {
     <div class="row"><button class="btn primary sm" data-act="export">${icon('export')}Export STL</button>${buck.result?.info ? `<button class="btn sm" data-act="buck-export">${icon('export')}Export buck</button>` : ''}${buck.result?.windows?.print.indices.length ? `<button class="btn sm" data-act="buck-export" data-v="each">${icon('export')}Export window bucks</button>` : ''}<button class="btn sm ghost" data-act="tool" data-v="variants">${icon('export')}Variants…</button><button class="btn sm ghost" data-editor-act="build-sheet" title="A page with the recipe, sizes, material and weight, to keep with the print">${icon('export')}Build sheet</button></div>`;
 }
 
-const TOOL_MENU = { bodyshape: 'shape', featurelayout: 'shape', panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', fix: 'repair', openings: 'repair', parts: 'repair', solid: 'repair', rebuild: 'repair', symmetry: 'repair', clearance: 'chassis', tabs: 'posts', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck', lenses: 'buck' };
+const TOOL_MENU = { tape: 'shape', bodyshape: 'shape', featurelayout: 'shape', panellines: 'shape', text: 'shape', interior: 'shell', lights: 'windows', fix: 'repair', openings: 'repair', parts: 'repair', solid: 'repair', rebuild: 'repair', symmetry: 'repair', clearance: 'chassis', tabs: 'posts', hollow: 'shell', paint: 'shell', chassis: 'chassis', posts: 'posts', windows: 'windows', buck: 'buck', lenses: 'buck' };
 
+// A step's line in the list, and when it kept what is under masking tape, that too.
 function stepDetail(step, info) {
+  const line = stepLine(step, info);
+  return info?.taped ? `${line} · tape kept` : line;
+}
+
+function stepLine(step, info) {
+  if (step.type === 'tape') {
+    const n = step.params.spots?.length ?? 0;
+    return `${n} taped spot${n === 1 ? '' : 's'}`;
+  }
   if (step.type === 'bodyshape') {
     const p = step.params,
       pc = (v) => `${v > 0 ? '+' : ''}${v}%`;
@@ -3650,8 +3733,10 @@ function applyGuide() {
   if (!pv && result && ui.panel === 'panellines' && !ui.editStep) pv = groovesNow();
   // Symmetrize: the side that goes, in red.
   if (!pv && result && ui.sym && ui.panel === 'symmetry' && !ui.editStep) pv = { faces: symmetryFaces() };
+  // Masking tape: the taped faces, in the colour of tape.
+  if (!pv && result && (ui.panel === 'tape' || editing?.type === 'tape')) pv = tapePreview();
   if (pv?.faces) {
-    viewport.paintSelection(pv.faces);
+    viewport.paintSelection(pv.faces, pv.color);
     ui.cutPainted = true;
   } else if (ui.cutPainted) {
     ui.cutPainted = false;
@@ -3674,6 +3759,8 @@ function setPointer(tool) {
   } else if (tool === 'hammer') {
     ui.panel = 'hammer';
     ui.editStep = null;
+  } else if (tool === 'tape') {
+    ui.panel = 'tape';
   } else if (tool === 'distance' || tool === 'wall') {
     ui.panel = 'measure';
     ui.editStep = null;
@@ -3803,6 +3890,11 @@ canvas.addEventListener('pointerdown', (e) => {
     drag.strokes = [];
     smoothAt(e);
   }
+  if (ui.pointer === 'tape') {
+    drag.spots = [];
+    drag.peel = e.altKey || tapeOptions().mode === 'peel';
+    tapeAt(e);
+  }
   if (ui.pointer === 'brush') {
     drag.mode = e.altKey ? 'remove' : 'add';
     if (!e.shiftKey && !e.altKey && selectedCount === 0) selection.fill(0);
@@ -3832,6 +3924,11 @@ canvas.addEventListener('pointermove', (e) => {
     const hit = viewport.pick(e);
     viewport.brushRing(hit, smoothOptions().radius);
     if (drag) smoothAt(e, hit);
+  }
+  if (ui.pointer === 'tape') {
+    const hit = viewport.pick(e);
+    viewport.brushRing(hit, tapeOptions().radius);
+    if (drag) tapeAt(e, hit);
   }
   if (!drag) return;
   if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 4) drag.moved = true;
@@ -3869,6 +3966,12 @@ canvas.addEventListener('pointerup', (e) => {
     viewport.brushRing(null);
     viewport.clearOverlay();
     if (d.strokes?.length) addSmooth({ strokes: d.strokes });
+    return;
+  }
+  if (ui.pointer === 'tape') {
+    viewport.brushRing(null);
+    viewport.clearOverlay();
+    if (d.spots?.length) (d.peel ? peelTape : addTape)(d.spots);
     return;
   }
   if (d.moved) return;
@@ -3945,13 +4048,14 @@ const actions = {
     if (['chassis', 'tyres', 'clearance', 'arches', 'stretch'].includes(v) && project.chassis) ui.look.chassis = true;
     if (v === 'select' && !['brush', 'lasso', 'connected'].includes(ui.pointer)) setPointer('brush');
     else if (v === 'hammer') setPointer('hammer');
+    else if (v === 'tape') setPointer('tape');
     else if (v === 'posts') setPointer('post');
     else if (v === 'posteditor') ui.postDraft = null;
     else if (v === 'paint') {
       setPointer('paint');
       if (!ui.look.thickness) actions.look('thickness');
     }
-    if (!['select', 'paint', 'hammer', 'posts', 'tabs'].includes(v) && ui.pointer !== 'look' && !['distance', 'wall'].includes(ui.pointer)) setPointer('look');
+    if (!['select', 'paint', 'hammer', 'posts', 'tabs', 'tape'].includes(v) && ui.pointer !== 'look' && !['distance', 'wall'].includes(ui.pointer)) setPointer('look');
     if (v === 'tabs' && ui.pointer !== 'tab') setPointer('look');
     if (v === 'cutoff' && !ui.cutoff.cuts.length) setPointer('cutplace');
     if ((v === 'select' || v === 'smooth') && protectActive()) lookup('skins');
@@ -4509,6 +4613,26 @@ const actions = {
     renderLibrarySettings();
     renderPanel();
   },
+  'tape-mode'(v) {
+    tapeOptions().mode = v;
+    if (ui.pointer !== 'tape') setPointer('tape');
+    renderPanel();
+  },
+  'tape-clear'() {
+    const step = tapeStep();
+    if (step) commit(() => (project.steps = project.steps.filter((s) => s !== step)));
+  },
+  // The Tape step moved to just before the first step that cuts or smooths.
+  'tape-first'() {
+    const step = tapeStep();
+    if (!step) return;
+    commit(() => {
+      const rest = project.steps.filter((s) => s !== step);
+      const at = rest.findIndex((s) => s.enabled && TAPE_AWARE.includes(s.type));
+      rest.splice(at < 0 ? rest.length : at, 0, step);
+      project.steps = rest;
+    });
+  },
   'cpart-add'() {
     $('#chassis-part-file').click();
   },
@@ -5065,6 +5189,10 @@ document.addEventListener('input', (e) => {
     smoothOptions().strength = v;
     const el = $('#smooth-strength-val');
     if (el) el.textContent = v;
+  } else if (f === 'tape-radius') {
+    tapeOptions().radius = v;
+    const el = $('#tape-radius-val');
+    if (el) el.textContent = fmtLen(v * 2, project.units, 1);
   } else if (f === 'paint-radius') {
     ui.paint.radius = v;
     const el = $('#paint-radius-val');

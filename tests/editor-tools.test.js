@@ -80,7 +80,7 @@ test('only projects containing body shaping require the new file format, prevent
   assert.equal(JSON.parse(encodeProjectFile(p)).version,1);
   p.steps=shapeSteps(p.steps,opts);const saved=JSON.parse(encodeProjectFile(p));assert.equal(saved.version,2);
   assert.deepEqual(decodeProjectFile(JSON.stringify(saved)).steps,p.steps);
-  saved.version=7;assert.throws(()=>decodeProjectFile(JSON.stringify(saved)),/newer Anvil/);
+  saved.version=8;assert.throws(()=>decodeProjectFile(JSON.stringify(saved)),/newer Anvil/);
 });
 
 test('with Mirror on, a light or text and its other side move and repeat as a mirrored pair', () => {
