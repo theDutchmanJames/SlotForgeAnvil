@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { UpdateCheck } = require('./update-check.cjs');
+const { LibraryFolders } = require('./library-folders.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const HOMEPAGE = require('../package.json').homepage;
@@ -38,10 +39,16 @@ function smokeTest(win) {
       () =>
         win.webContents
           .executeJavaScript(
-            `({ href: location.href, brand: document.querySelector('.brand')?.getAttribute('aria-label'),
+            `(async () => ({ href: location.href, brand: document.querySelector('.brand')?.getAttribute('aria-label'),
                 wordmark: [...document.querySelectorAll('.brand img, .sf-footer-brand img')].filter(i => i.complete && i.naturalWidth > 0).length, menus: document.querySelectorAll('#tools [data-act=menu]').length,
                 empty: !!document.querySelector('#empty'), canvas: !!document.querySelector('#view canvas'),
-                desktop: window.slotforgeDesktop?.desktop === true, updates: !!window.UpdateUI && typeof window.slotforgeDesktop?.updateCheck === 'function' })`,
+                desktop: window.slotforgeDesktop?.desktop === true, updates: !!window.UpdateUI && typeof window.slotforgeDesktop?.updateCheck === 'function',
+                library: await (async () => {
+                  document.querySelector('[data-act=settings]')?.click();
+                  await new Promise(r => setTimeout(r, 2500));
+                  const card = [...document.querySelectorAll('.settings-dialog section')].find(s => s.querySelector('h2')?.textContent === 'Library');
+                  return { card: card?.innerText ?? null, folders: (await window.slotforgeDesktop?.library?.('get'))?.value ?? null };
+                })() }))()`,
           )
           .then(page => write({ page }), fail),
       3000,
@@ -127,6 +134,54 @@ if (!app.requestSingleInstanceLock()) {
       throw Error('Unknown update action.');
     } catch (e) {
       return { error: e.message, code: e.code };
+    }
+  });
+
+  // Settings → Library: the library kept in folders the user picks.
+  const libraryFolders = new LibraryFolders(app.getPath('userData'));
+  const foldersLoaded = libraryFolders.load();
+  const pickFolder = async (title) => {
+    const r = await dialog.showOpenDialog(win, {
+      title,
+      defaultPath: path.join(app.getPath('documents'), 'SlotForge Anvil', 'Library'),
+      properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    fs.mkdirSync(r.filePaths[0], { recursive: true });
+    return r.filePaths[0];
+  };
+  ipcMain.handle('library:action', async (event, action, a = {}) => {
+    if (!ownPage(event)) return { error: 'Unknown page.' };
+    try {
+      await foldersLoaded;
+      const L = libraryFolders;
+      const value = await (async () => {
+        if (action === 'get') return L.get();
+        if (action === 'choose-main') {
+          const dir = await pickFolder('Keep the Anvil library in this folder');
+          return dir ? L.setMain(dir) : null;
+        }
+        if (action === 'choose-extra') {
+          const dir = await pickFolder('Show the chassis and parts in this folder in the library');
+          return dir ? L.addExtra(dir) : null;
+        }
+        if (action === 'inside') return L.setMain(null);
+        if (action === 'forget') return L.forget(String(a.root));
+        if (action === 'show') {
+          if (!L.roots().includes(a.root)) throw Error('That folder is not one of the library folders.');
+          return shell.openPath(a.root);
+        }
+        if (action === 'scan') return L.scan();
+        if (action === 'read') return L.read(a.root, a.rel);
+        if (action === 'write') return L.write(a.root, a.rel, a.bytes, !!a.replace);
+        if (action === 'remove') return L.remove(a.root, a.rel);
+        if (action === 'mkdir') return L.mkdir(a.root, a.rel);
+        if (action === 'rmdir') return L.removeDir(a.root, a.rel);
+        throw Error('Unknown library action.');
+      })();
+      return { ok: true, value };
+    } catch (e) {
+      return { error: e.message };
     }
   });
 

@@ -32,8 +32,13 @@ import { flareBlows } from './geometry/arches.js';
 import { applyOrient, applyOrientAt, guessOrient, orientShift } from './geometry/engine.js';
 import { fitPart, placePart, printLayout } from './geometry/chassisparts.js';
 import { readSTLMesh } from './geometry/stl-mesh.js';
-import { changeLibrary, library } from './library.js';
+import { changeLibrary, changeLibraryFolders, diskState, library, libraryFolders, libraryOnDisk, syncLibrary } from './library.js';
 import {
+  addFolder,
+  listFolders,
+  moveToFolder,
+  removeFolder,
+  renameFolder,
   decodeChassisFile,
   deleteChassis,
   deletePart,
@@ -93,6 +98,10 @@ const ui = {
   menu: 'scale',
   panel: 'home', // home | orient | scale | slice | select | measure | stepinfo
   editStep: null,
+  // The library's folder tree: folders shut, a folder being named, a row being moved.
+  libShut: new Set(),
+  libEdit: null,
+  libMove: null,
   pointer: 'look', // look | brush | lasso | connected | distance | wall
   look: { section: false, original: false },
   // Keep the far half, so the side view looks into the cut.
@@ -1703,12 +1712,18 @@ function setChassisField(path, raw) {
 
 // ------------------------------------------------------------ chassis library
 
-const lib = { list: null, busy: false, error: null };
+const lib = { list: null, folders: [], busy: false, error: null };
+// Everything shown from the library, read afresh.
+function readLibrary(db) {
+  lib.list = listChassis(db);
+  lib.folders = listFolders(db);
+  partLib.list = listParts(db);
+}
 function libraryList() {
   if (lib.list || lib.busy || lib.error) return lib.list;
   lib.busy = true;
   library()
-    .then((db) => (lib.list = listChassis(db)))
+    .then(readLibrary)
     .catch((e) => (lib.error = e.message))
     .finally(() => {
       lib.busy = false;
@@ -1719,13 +1734,80 @@ function libraryList() {
 async function libraryChange(fn, message) {
   try {
     const out = await changeLibrary(fn);
-    lib.list = listChassis(await library());
-    if (message) toast(message);
+    readLibrary(await library());
+    if (diskState.error) toast(`The library folder could not be written: ${diskState.error}`, 'bad');
+    else if (message) toast(message);
     renderPanel();
     return out;
   } catch (e) {
     toast(e.message, 'bad');
   }
+}
+
+// The library's folders as a tree, with the chassis or parts (kind) in them.
+// The library's own folders first, then each extra folder on disk.
+const rootLabel = (root) => root.split(/[\\/]/).filter(Boolean).pop() ?? root;
+const parentPath = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
+function libraryTree(kind, items, rowHtml) {
+  const folders = lib.folders ?? [];
+  const roots = ['', ...new Set([...folders.map((f) => f.root), ...items.map((r) => r.root)].filter(Boolean))];
+  const ed = ui.libEdit;
+  const nameField = (value) =>
+    `<div class="row lfold-edit"><span class="num" style="flex:1"><input data-field="lib-folder-name" type="text" value="${esc(value)}" placeholder="Folder name" style="font-family:var(--font-ui)"></span><button class="btn sm" data-act="lib-folder-ok">OK</button><button class="btn sm ghost" data-act="lib-folder-cancel">Cancel</button></div>`;
+  const count = (root, path) => items.filter((r) => r.root === root && (r.folder === path || r.folder.startsWith(`${path}/`))).length;
+  const level = (root, path, depth) => {
+    let html = '';
+    for (const f of folders.filter((x) => x.root === root && x.path && parentPath(x.path) === path)) {
+      const key = `${root}\n${f.path}`, shut = ui.libShut.has(key), v = esc(`${kind}|${root}|${f.path}`);
+      const renaming = ed?.mode === 'rename' && ed.root === root && ed.path === f.path;
+      html += renaming
+        ? nameField(f.path.slice(f.path.lastIndexOf('/') + 1))
+        : `<div class="prow lfold" style="padding-left:${6 + depth * 10}px" data-act="lib-fold" data-v="${esc(key)}"><span><b>${shut ? '▸' : '▾'} ${icon('open')}${esc(f.path.slice(f.path.lastIndexOf('/') + 1))}</b><small>${count(root, f.path)} here</small></span><span class="lact"><span class="lbtns">
+          <button class="btn sm icon ghost" data-act="lib-folder-new" data-v="${v}" title="New folder in here">${icon('plus')}</button>
+          <button class="btn sm icon ghost" data-act="lib-folder-rename" data-v="${v}" title="Rename this folder">${icon('text')}</button>
+          <button class="btn sm icon ghost" data-act="lib-folder-remove" data-v="${v}" title="Remove this folder (what is in it moves up a level)">${icon('trash')}</button></span></span></div>`;
+      if (ed?.mode === 'new' && ed.root === root && ed.path === f.path) html += nameField('');
+      if (!shut) html += level(root, f.path, depth + 1);
+    }
+    for (const r of items.filter((x) => x.root === root && x.folder === path)) {
+      html += rowHtml(r, depth);
+      if (ui.libMove === `${kind}|${r.id}`) {
+        const options = [`<option value="">${root ? esc(rootLabel(root)) : 'Top of the library'}</option>`, ...folders.filter((f) => f.root === root).map((f) => `<option value="${esc(f.path)}"${f.path === r.folder ? ' selected' : ''}>${esc(f.path.replaceAll('/', ' › '))}</option>`)];
+        html += `<div class="row" style="padding-left:${16 + depth * 10}px"><span class="muted" style="font-size:12px">Move to</span><select data-field="lib-move" data-kind="${kind}" data-id="${r.id}">${options.join('')}</select></div>`;
+      }
+    }
+    return html;
+  };
+  let html = '';
+  for (const root of roots) {
+    if (root) {
+      const key = `${root}\n`, shut = ui.libShut.has(key);
+      html += `<div class="prow lfold lroot" data-act="lib-fold" data-v="${esc(key)}" title="${esc(root)}"><span><b>${shut ? '▸' : '▾'} ${icon('open')}${esc(rootLabel(root))}</b><small>folder on disk · ${count(root, '')} here</small></span>
+        <span class="lact"><span class="lbtns"><button class="btn sm icon ghost" data-act="lib-folder-new" data-v="${esc(`${kind}|${root}|`)}" title="New folder in here">${icon('plus')}</button></span></span></div>`;
+      if (ed?.mode === 'new' && ed.root === root && ed.path === '') html += nameField('');
+      if (!shut) html += level(root, '', 1);
+    } else html += level('', '', 0);
+  }
+  if (ed?.mode === 'new' && ed.root === '' && ed.path === '' ) html = nameField('') + html;
+  return html;
+}
+
+// A row of the tree: indented to its folder, with a Move button.
+// use: the Use button, always shown; icons: the small buttons, shown over
+// the row's end while it is pointed at.
+const treeRow = (kind, r, depth, body, use, icons, cur = false) =>
+  `<div class="prow lrow${cur ? ' cur' : ''}" style="padding-left:${7 + depth * 10}px">${body}<span class="lact"><span class="lbtns">${icons}<button class="btn sm icon ghost" data-act="lib-move" data-v="${kind}|${r.id}" title="Move to a folder">${icon('move')}</button></span>${use}</span></div>`;
+
+// The name typed for a new or renamed folder.
+function finishFolderEdit(value) {
+  const ed = ui.libEdit;
+  if (!ed) return;
+  ui.libEdit = null;
+  if (!String(value ?? '').trim()) return renderPanel();
+  libraryChange((db) => {
+    if (ed.mode === 'new') addFolder(db, ed.root, ed.path, value);
+    else renameFolder(db, ed.root, ed.path, value);
+  }).then(() => renderPanel());
 }
 
 function libraryBox() {
@@ -1735,20 +1817,25 @@ function libraryBox() {
     ? `<div class="note bad">The library could not be opened: ${esc(lib.error)}</div>`
     : !list
       ? '<div class="muted" style="font-size:12px">Opening the library…</div>'
-      : !list.length
+      : !list.length && !lib.folders.length && !ui.libEdit
         ? '<div class="muted" style="font-size:12px">Your library is empty. Save a chassis to keep it for your next body.</div>'
-        : `<div class="plist">${list
-            .map(
-              (r) => `<div class="prow lrow${project.chassis?.libId === r.id ? ' cur' : ''}"><span><b>${esc(r.name)}</b><small>wheelbase ${fmtLen(r.data.wheelbase, u, 1)}${
+        : `<div class="plist">${libraryTree('chassis', list, (r, depth) =>
+            treeRow(
+              'chassis',
+              r,
+              depth,
+              `<span><b>${esc(r.name)}</b><small>wheelbase ${fmtLen(r.data.wheelbase, u, 1)}${
                 r.data.wheelbaseMin != null || r.data.wheelbaseMax != null ? ` (${fmtLen(r.data.wheelbaseMin ?? r.data.wheelbase, u, 0)}–${fmtLen(r.data.wheelbaseMax ?? r.data.wheelbase, u, 0)})` : ''
-              } · tyres ${fmtLen(r.data.front.diameter, u, 1)} / ${fmtLen(r.data.rear.diameter, u, 1)}${r.stlName ? ' · STL' : ''}</small></span>
-              <button class="btn sm" data-act="lib-use" data-v="${r.id}">Use</button>
-              <button class="btn sm icon ghost" data-act="lib-share" data-v="${r.id}" title="Share as a file">${icon('export')}</button>
-              <button class="btn sm icon ghost" data-act="lib-delete" data-v="${r.id}" title="Remove from the library">${icon('trash')}</button></div>`,
-            )
-            .join('')}</div>`;
-  return `<div class="f">Your library${rows}</div>
-    <div class="row"><button class="btn sm ghost" data-act="chassis-import">${icon('open')}Load chassis file</button></div>`;
+              } · tyres ${fmtLen(r.data.front.diameter, u, 1)} / ${fmtLen(r.data.rear.diameter, u, 1)}${r.stlName ? ' · STL' : ''}${r.data.parts?.length ? ` · ${r.data.parts.length} part${r.data.parts.length === 1 ? '' : 's'}` : ''}</small></span>`,
+              `<button class="btn sm" data-act="lib-use" data-v="${r.id}">Use</button>`,
+              `<button class="btn sm icon ghost" data-act="lib-share" data-v="${r.id}" title="Share as a file">${icon('export')}</button>
+              <button class="btn sm icon ghost" data-act="lib-delete" data-v="${r.id}" title="Remove from the library">${icon('trash')}</button>`,
+              project.chassis?.libId === r.id,
+            ),
+          )}</div>`;
+  const where = libraryFolders()?.main ? `<div class="muted" style="font-size:12px">Kept in ${esc(libraryFolders().main)}. Settings › Library.</div>` : '';
+  return `<div class="f">Your library${rows}${where}</div>
+    <div class="row"><button class="btn sm ghost" data-act="chassis-import">${icon('open')}Load chassis file</button><button class="btn sm ghost" data-act="lib-folder-new" data-v="chassis||">${icon('plus')}New folder</button></div>`;
 }
 
 const chField = (path, value, unit = project.units) =>
@@ -3275,7 +3362,7 @@ function partLibrary() {
   if (partLib.list || partLib.busy || partLib.error) return partLib.list ?? [];
   partLib.busy = true;
   library()
-    .then((db) => (partLib.list = listParts(db)))
+    .then(readLibrary)
     .catch((e) => (partLib.error = e.message))
     .finally(() => {
       partLib.busy = false;
@@ -3311,7 +3398,8 @@ function panelAddPart(editing) {
     <div class="row"><button class="btn primary sm" data-act="ap-load">${icon('open')}Load a part (STL)</button></div>
     ${cards}
     ${steps.length ? '<div class="muted" style="font-size:12px">A joined part overlaps the body as its own piece; the slicer joins them when it prints. A part of its own shows see-through and is exported on its own.</div>' : ''}
-    ${lib.length ? `<div class="f">Your parts<div class="plist">${lib.map((r) => `<div class="prow"><span><b>${esc(r.name)}</b><small>${esc(r.stlName)}</small></span><button class="btn sm" data-act="ap-lib-use" data-v="${r.id}">Use</button><button class="btn sm icon ghost" data-act="ap-lib-delete" data-v="${r.id}" title="Remove from the library">${icon('trash')}</button></div>`).join('')}</div></div>` : ''}`;
+    ${lib.length || ui.libEdit ? `<div class="f">Your parts<div class="plist">${libraryTree('parts', lib, (r, depth) => treeRow('parts', r, depth, `<span><b>${esc(r.name)}</b><small>${esc(r.stlName)}</small></span>`, `<button class="btn sm" data-act="ap-lib-use" data-v="${r.id}">Use</button>`, `<button class="btn sm icon ghost" data-act="ap-lib-delete" data-v="${r.id}" title="Remove from the library">${icon('trash')}</button>`))}</div></div>
+      <div class="row"><button class="btn sm ghost" data-act="lib-folder-new" data-v="parts||">${icon('plus')}New folder</button></div>` : ''}`;
 }
 
 // ------------------------------------------------------------ final check
@@ -4371,6 +4459,56 @@ const actions = {
   'stl-flip'() {
     commit(() => (project.chassis = { ...project.chassis, stl: { ...project.chassis.stl, flip: !project.chassis.stl.flip } }), false);
   },
+  'lib-fold'(key) {
+    if (ui.libShut.has(key)) ui.libShut.delete(key);
+    else ui.libShut.add(key);
+    renderPanel();
+  },
+  'lib-folder-new'(v) {
+    const [kind, root, path] = v.split('|');
+    ui.libEdit = { mode: 'new', kind, root, path };
+    if (path) ui.libShut.delete(`${root}\n${path}`);
+    renderPanel();
+    $('[data-field="lib-folder-name"]')?.focus();
+  },
+  'lib-folder-rename'(v) {
+    const [kind, root, path] = v.split('|');
+    ui.libEdit = { mode: 'rename', kind, root, path };
+    renderPanel();
+    $('[data-field="lib-folder-name"]')?.select();
+  },
+  'lib-folder-ok'() {
+    finishFolderEdit($('[data-field="lib-folder-name"]')?.value);
+  },
+  'lib-folder-cancel'() {
+    ui.libEdit = null;
+    renderPanel();
+  },
+  'lib-folder-remove'(v) {
+    const [, root, path] = v.split('|');
+    const name = path.slice(path.lastIndexOf('/') + 1);
+    if (!confirm(`Remove the folder "${name}"? What is in it moves up one level; nothing is removed from the library.`)) return;
+    libraryChange((db) => removeFolder(db, root, path), `Folder ${name} removed.`);
+  },
+  'lib-move'(v) {
+    ui.libMove = ui.libMove === v ? null : v;
+    renderPanel();
+  },
+  async 'lib-disk'(v) {
+    const [action, root] = v.split('|');
+    try {
+      const done = await changeLibraryFolders(action, root ? { root } : undefined);
+      if (done && action !== 'show') {
+        readLibrary(await library());
+        if (diskState.error) toast(`The library folder could not be used: ${diskState.error}`, 'bad');
+        else toast(action === 'choose-main' ? 'Your library is kept in that folder now.' : action === 'inside' ? 'Your library is kept inside Anvil again. The files in the folder stay there.' : action === 'forget' ? 'That folder is no longer shown in the library. Its files stay where they are.' : 'The chassis and parts in that folder show in your library.');
+      }
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+    renderLibrarySettings();
+    renderPanel();
+  },
   'cpart-add'() {
     $('#chassis-part-file').click();
   },
@@ -4542,7 +4680,7 @@ const actions = {
     const f = s && project.parts?.[s.params.part];
     if (!f) return;
     await changeLibrary((db) => savePart(db, { name: s.params.name, fileName: f.fileName, bytes: f.bytes, place: s.params.place })).catch((e) => toast(e.message, 'bad'));
-    partLib.list = listParts(await library());
+    readLibrary(await library());
     toast(`${s.params.name} is in your library.`);
     renderPanel();
   },
@@ -4557,7 +4695,7 @@ const actions = {
     const row = partLib.list?.find((r) => r.id === id);
     if (!row || !confirm(`Remove ${row.name} from your library? Bodies that use it keep their copy.`)) return;
     await changeLibrary((db) => deletePart(db, id)).catch((e) => toast(e.message, 'bad'));
-    partLib.list = listParts(await library());
+    readLibrary(await library());
     renderPanel();
   },
   'win-new'() {
@@ -4948,6 +5086,12 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', (e) => {
   const f = e.target.dataset?.field;
   if (!f) return;
+  if (f === 'lib-folder-name') return finishFolderEdit(e.target.value);
+  if (f === 'lib-move') {
+    const { kind, id } = e.target.dataset;
+    ui.libMove = null;
+    return libraryChange((db) => moveToFolder(db, kind, id, e.target.value));
+  }
   if (f.startsWith('ch-')) return setChassisField(f.slice(3), e.target.value);
   if (f.startsWith('ap-')) {
     const [, id, key] = f.split('-');
@@ -5475,9 +5619,44 @@ function settingsDialog() {
     <button type="button" class="btn quiet" aria-label="Close">✕</button></div><div class="settings-body"></div>`;
   settingsBox.querySelector('.btn.quiet').onclick = () => settingsBox.close();
   settingsBox.querySelector('.settings-body').append(updatesHolder);
+  if (libraryOnDisk) settingsBox.querySelector('.settings-body').append(librarySettings);
+  library()
+    .then(() => renderLibrarySettings())
+    .catch(() => {});
   document.body.append(settingsBox);
   return settingsBox;
 }
+// Settings → Library (desktop app): where the library is kept.
+const librarySettings = document.createElement('section');
+librarySettings.className = 'update-card ss-section';
+function renderLibrarySettings() {
+  if (!libraryOnDisk) return;
+  const f = libraryFolders() ?? { main: null, extra: [] };
+  const row = (name, desc, controls) => `<div class="ss-row"><div class="ss-t"><b>${name}</b>${desc ? `<span class="ss-desc">${desc}</span>` : ''}</div><div class="ss-ctl">${controls}</div></div>`;
+  const extra = f.extra
+    .map((d) => row(esc(rootLabel(d)), esc(d), `<button type="button" class="btn ghost" data-act="lib-disk" data-v="show|${esc(d)}">Show</button><button type="button" class="btn ghost" data-act="lib-disk" data-v="forget|${esc(d)}">Remove</button>`))
+    .join('');
+  librarySettings.innerHTML = `<h2>Library</h2><div class="ss-sheet">
+    ${row('Kept in', f.main ? esc(f.main) : 'Inside Anvil, on this computer.', f.main ? `<button type="button" class="btn ghost" data-act="lib-disk" data-v="show|${esc(f.main)}">Show</button><button type="button" class="btn ghost" data-act="lib-disk" data-v="choose-main">Change…</button><button type="button" class="btn ghost" data-act="lib-disk" data-v="inside">Keep inside Anvil</button>` : '<button type="button" class="btn" data-act="lib-disk" data-v="choose-main">Keep it in a folder…</button>')}
+    ${extra}
+    ${row('Extra folders', 'Show the chassis and parts in another folder too, such as a club\'s shared folder.', '<button type="button" class="btn ghost" data-act="lib-disk" data-v="choose-extra">Add a folder…</button>')}
+    </div>
+    ${diskState.error ? `<p class="ss-note warn">${esc(diskState.error)}</p>` : ''}
+    ${diskState.unreadable.length ? `<p class="ss-note warn">Not chassis files Anvil can read: ${diskState.unreadable.map(esc).join(', ')}.</p>` : ''}
+    <p class="ss-note">In a folder, each chassis is its own .anvilchassis file and each part its own STL, in sub-folders like the library's folders. Back it up, sync it with Dropbox or OneDrive, or put files in by hand: Anvil reads the folders again whenever you come back to it.</p>`;
+}
+// Back in Anvil: the library folders may have changed meanwhile.
+let lastLook = 0;
+window.addEventListener('focus', () => {
+  if (!libraryOnDisk || !libraryFolders() || Date.now() - lastLook < 3000) return;
+  lastLook = Date.now();
+  syncLibrary().then(async (changed) => {
+    if (!changed) return;
+    readLibrary(await library());
+    renderPanel();
+  });
+});
+
 const updatesHolder = document.createElement('div');
 updatesHolder.className = 'st-updates';
 globalThis.UpdateUI?.start({

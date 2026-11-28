@@ -93,8 +93,42 @@ test('add-on parts are kept in the library with their file', () => {
   const bytes = new Uint8Array([1, 2, 3, 4]).buffer;
   const id = savePart(db, { name: 'Rear wing', fileName: 'wing.stl', bytes, place: { z: 30, scale: 1 } });
   const again = openLibrary(SQL, db.export());
-  assert.deepEqual(listParts(again), [{ id, name: 'Rear wing', stlName: 'wing.stl', data: { place: { z: 30, scale: 1 } } }]);
+  assert.deepEqual(listParts(again), [{ id, name: 'Rear wing', stlName: 'wing.stl', data: { place: { z: 30, scale: 1 } }, root: '', folder: '' }]);
   assert.deepEqual(Array.from(readPartStl(again, id)), [1, 2, 3, 4]);
   deletePart(again, id);
   assert.equal(listParts(again).length, 0);
+});
+
+import { addFolder, listFolders, moveToFolder, removeFolder, renameFolder, folderName } from '../src/library-db.js';
+test('folders: made, things moved in, renamed and removed with what is in them moving up', () => {
+  const db = openLibrary(SQL, null);
+  const a = saveChassis(db, { ...chassis, name: 'Plafit' });
+  const b = savePart(db, { name: 'Wing', fileName: 'w.stl', bytes: new Uint8Array([1]).buffer });
+  const peter = addFolder(db, '', '', 'Peter');
+  const small = addFolder(db, '', peter, '1-43');
+  assert.equal(small, 'Peter/1-43');
+  addFolder(db, '', '', 'Empty');
+  moveToFolder(db, 'chassis', a, small);
+  moveToFolder(db, 'parts', b, peter);
+  assert.deepEqual(listFolders(db).map((f) => f.path), ['Empty', 'Peter', 'Peter/1-43']);
+  // Saving a chassis again keeps it in its folder.
+  saveChassis(db, { ...chassis, name: 'Plafit' }, null, a);
+  assert.equal(listChassis(db)[0].folder, 'Peter/1-43');
+  renameFolder(db, '', peter, 'Peter M');
+  assert.equal(listChassis(db)[0].folder, 'Peter M/1-43');
+  assert.equal(listParts(db)[0].folder, 'Peter M');
+  removeFolder(db, '', 'Peter M');
+  assert.equal(listChassis(db)[0].folder, '1-43');
+  assert.equal(listParts(db)[0].folder, '');
+  assert.deepEqual(listFolders(db).map((f) => f.path), ['1-43', 'Empty']);
+  assert.throws(() => folderName('a/b'));
+  assert.throws(() => folderName('  '));
+});
+
+test('an old library gets the folder columns, with everything at the top', () => {
+  const old = new SQL.Database();
+  old.run('CREATE TABLE chassis (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL, stl BLOB, stl_name TEXT, updated INTEGER NOT NULL)');
+  old.run("INSERT INTO chassis VALUES ('c1', 'Old', ?, NULL, NULL, 1)", [JSON.stringify(chassis)]);
+  const db = openLibrary(SQL, old.export());
+  assert.deepEqual([listChassis(db)[0].root, listChassis(db)[0].folder], ['', '']);
 });

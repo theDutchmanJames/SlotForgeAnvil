@@ -41,7 +41,15 @@ function launch() {
 (async () => {
   try {
     const noWebGL = !!process.env.SLOTFORGE_NO_WEBGL_OK;
+    // The second start keeps its library in a folder with a chassis file in it.
+    const libDir = path.join(data, 'library');
     for (const round of ['first start', 'second start']) {
+      if (round === 'second start') {
+        fs.mkdirSync(path.join(libDir, 'Club'), { recursive: true });
+        const chassis = { name: 'Folder chassis', frontX: 0, wheelbase: 80, clearance: 1, front: { diameter: 20, width: 8, inOut: 25 }, rear: { diameter: 20, width: 10, inOut: 25 } };
+        fs.writeFileSync(path.join(libDir, 'Club', 'Folder chassis.anvilchassis'), JSON.stringify({ format: 'slotforge-anvil-chassis', version: 1, chassis, stl: null }));
+        fs.writeFileSync(path.join(data, 'app-profile', 'library-folders.json'), JSON.stringify({ main: libDir, extra: [] }));
+      }
       const r = await launch();
       assert.equal(r.failed, undefined, r.message);
       assert.equal(path.resolve(r.profile), path.join(data, 'app-profile'), round + ': data stays in the given folder');
@@ -52,6 +60,12 @@ function launch() {
       assert.ok(r.page.desktop, round + ': the desktop bridge is there');
       assert.ok(r.page.updates, round + ': the update check is there');
       assert.match(r.page.href, /^file:/, round);
+      // Settings → Library, and the library folders through the desktop bridge.
+      assert.ok(r.page.library?.card?.includes('Kept in'), round + ': Settings shows where the library is kept: ' + JSON.stringify(r.page.library));
+      if (round === 'second start') {
+        assert.equal(path.resolve(r.page.library.folders.main), path.resolve(libDir), round + ': the library folder is used');
+        assert.ok(r.page.library.card.includes(libDir), round + ': Settings names the library folder');
+      } else assert.ok(r.page.library.card.includes('Inside Anvil'), round + ': the library starts inside Anvil');
       // SLOTFORGE_NO_WEBGL_OK: a CI machine that cannot draw 3D at all may report
       // only that; every other console error still fails.
       const errors = noWebGL ? r.errors.filter((e) => !/WebGL/i.test(String(e))) : r.errors;
